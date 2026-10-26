@@ -1,0 +1,17 @@
+# Passport сборки (kind: assembly). Формат и правила: specs/Passport.md.
+# Создан агентом по прямой команде пользователя (базовый каркас проекта, 2026-10-26).
+# role/status — заготовка, подлежит правке пользователем.
+passport_schema: "0.2"
+kind: assembly
+status: hypothesis
+version: 0.1.0
+role: "Корень сборки AXMVA: объединяет элементы проекта и их инварианты"
+compat: {passport_schema: ">=0.2 <0.3"}
+write_policy:
+  allowed_writers: []
+  per_agent_spaces: true
+change_policy:
+  proposers: [user]
+  advisors: [agents]
+  approver: user
+order: []
