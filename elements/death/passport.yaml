@@ -1,0 +1,73 @@
+# Черновик (status: hypothesis), предложен агентом по прямой команде пользователя.
+# Основа только: mark() по достижимости (K=3 + фабричное дно), append-only
+# лог Focus/Unfocus, replay. Повторяет эту часть axmg (death.rs), переписано
+# как своя реализация. Протестировано (5/5) и прогнано на реальном файле
+# (bin/death_demo.rs): 114399 примитивов в полке, 16122 (14%) в фокусе.
+# Сознательно НЕ перенесено сейчас (глубина, по прямой команде пользователя
+# 2026-10-28 "давай пока заложим основу, потом глубину"): weight_cut (срез
+# по весу PPMI среди пограничных) и персистентность лога на диск.
+passport_schema: "0.2"
+kind: code
+status: hypothesis
+version: 0.1.0
+role: "Смерть (основа): generational GC без sweep — mark по достижимости от корней (K=3 оборота + фабричное дно), append-only лог Focus/Unfocus, воскрешение = новая запись Focus"
+
+inputs:
+  - {name: wheel_state, type: "&WheelState", meaning: "Store + last_touched_revolution + revolution (источник: elements/wheel)"}
+
+outputs:
+  - {name: focused_set, type: "set<TokenId>", meaning: "множество токенов, достижимых от корней прямо сейчас"}
+  - {name: focus_events, type: "list<FocusEvent>", meaning: "append-only лог Focus{token,revolution} / Unfocus{token,revolution}"}
+  - {name: mark_outcome, type: "{newly_focused, newly_unfocused, unchanged}", meaning: "три естественных исхода одного вызова mark()"}
+
+depends_on:
+  - {id: core, version_range: ">=0.1.0"}
+  - {id: wheel, version_range: ">=0.1.0"}
+must_not_touch: [смысл, "вес PPMI (weight_cut отложен)"]
+
+links_in:
+  - from: wheel
+    channel: direct
+    format: "Store (level_of, get, len), last_touched_revolution, revolution"
+    mode: read
+    gate: {accepts: [wheel], rate_limit: "", min_score: {}, provenance_required: false}
+
+contract:
+  requires:
+    - what: "Корень = фабричное дно (уровень 0) ∪ токены с last_touched в последние K=3 оборота"
+      class: invariant
+      status: hypothesis
+      check: {test: "factory_tokens_are_always_roots_and_reachable (unit-тест)", metric: "", threshold: "все 256 фабричных всегда корни"}
+    - what: "Достижимость вычисляется вниз по составу (дети) от корней, а не хранится отдельно"
+      class: invariant
+      status: hypothesis
+      check: {test: "token_outside_root_window_is_unfocused_but_reachable_child_stays_focused (unit-тест)", metric: "", threshold: ""}
+    - what: "Смерть — запись Unfocus в лог, не удаление/мутация тела токена в Store"
+      class: invariant
+      status: hypothesis
+      check: {test: "тело токена (hash/level/children) после Unfocus идентично телу до — Store не предоставляет мутирующих методов над телом (структурная гарантия, не отдельный тест)", metric: "", threshold: ""}
+    - what: "Воскрешение — просто более поздняя запись Focus, не отдельный механизм"
+      class: invariant
+      status: hypothesis
+      check: {test: "resurrection_is_a_later_focus_event_not_a_special_mechanism (unit-тест)", metric: "минимум Focus->Unfocus->Focus в логе на один токен", threshold: "3 события"}
+    - what: "mark() без изменений Колеса между вызовами даёт только unchanged, не повторный Focus"
+      class: invariant
+      status: hypothesis
+      check: {test: "mark_outcome_reports_three_natural_results (unit-тест)", metric: "newly_focused/newly_unfocused на повторном mark без нового turn", threshold: "0"}
+    - what: "replay по логу событий восстанавливает то же focused-множество, что накопленное состояние"
+      class: invariant
+      status: hypothesis
+      check: {test: "replay_reconstructs_focused_set_bit_for_bit (unit-тест)", metric: "", threshold: "побитовое совпадение множеств"}
+  bonus: []
+  guarantees: []
+  known_losses: ["weight_cut не реализован — фокус сейчас шире, чем был бы с полным Смертью (без среза пограничных по весу PPMI)"]
+
+cost: {ram: "событий в логе растёт без ограничения (append-only, персистентности нет)", time: "O(размера полки) на каждый mark() — полный пересчёт достижимости, не инкрементальный"}
+droppable: {value: false, why: "без вытеснения любой встреченный токен остаётся в фокусе навечно — рост без границ; но сама механика пока минимальна (K=3 без weight_cut), это основа, не весь задуманный модуль"}
+sources: ["../../drafts/axmv2-deck-map.md", "../../drafts/axmv2-time-module.md"]
+open_questions:
+  - "weight_cut (срез по весу, квантиль 25% среди пограничных) требует PPMI/co-occurrence (окно 2..5), которых у нас пока нет — осознанно отложено как «глубина» (прямая команда пользователя 2026-10-28)."
+  - "Кто отвечает за ограничение длины wheel.sequence (открытый вопрос в elements/wheel) — Смерть НЕ отвечает: mark/weight_cut работают над множеством токенов целиком (Store), не над длиной последовательности в Колесе. Разные вещи, вопрос остаётся открытым сам по себе."
+  - "Персистентность лога на диск не реализована — только in-memory, без сохранения между запусками."
+  - "K=3 перенесено как есть из axmg, не пересмотрено и не перепроверено на наших данных — открыто, стоит ли это число менять."
+note: ""

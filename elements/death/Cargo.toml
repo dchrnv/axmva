@@ -1,0 +1,15 @@
+[package]
+name = "axmva-death"
+version = "0.1.0"
+edition = "2024"
+
+# Реализация elements/death (см. passport.yaml рядом) — только основа:
+# mark() по достижимости от корней (K=3 + фабричное дно), append-only лог
+# Focus/Unfocus, replay. Повторяет эту часть проверенной axmg (death.rs).
+# Сознательно НЕ перенесено (глубина, не основа, см. open_questions):
+# weight_cut (нужен PPMI/co-occurrence, которых пока нет) и персистентность
+# на диск (redb).
+
+[dependencies]
+axmva-core = { path = "../core" }
+axmva-wheel = { path = "../wheel" }
