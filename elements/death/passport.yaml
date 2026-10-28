@@ -14,7 +14,7 @@ version: 0.1.0
 role: "Смерть: generational GC без sweep — mark по достижимости от корней (K=3 оборота + фабричное дно), weight_cut по накопленному PPMI-весу среди пограничных, append-only лог Focus/Unfocus, воскрешение = новая запись Focus"
 
 inputs:
-  - {name: wheel_state, type: "&WheelState", meaning: "Store + sequence + last_touched_revolution + revolution (источник: elements/wheel)"}
+  - {name: epoch_state, type: "&EpochState", meaning: "Store + sequence + last_touched_revolution + revolution (источник: elements/epoch)"}
 
 outputs:
   - {name: focused_set, type: "set<TokenId>", meaning: "множество токенов, достижимых от корней прямо сейчас (после mark и, опционально, weight_cut)"}
@@ -24,16 +24,16 @@ outputs:
 
 depends_on:
   - {id: core, version_range: ">=0.1.0"}
-  - {id: wheel, version_range: ">=0.1.0"}
+  - {id: epoch, version_range: ">=0.1.0"}
   - {id: ppmi, version_range: ">=0.1.0"}
 must_not_touch: [смысл]
 
 links_in:
-  - from: wheel
+  - from: epoch
     channel: direct
     format: "Store (level_of, get, len), sequence, last_touched_revolution, revolution"
     mode: read
-    gate: {accepts: [wheel], rate_limit: "", min_score: {}, provenance_required: false}
+    gate: {accepts: [epoch], rate_limit: "", min_score: {}, provenance_required: false}
   - from: ppmi
     channel: direct
     format: "Window::range(2,5) + filter_by_min_level(2) + CooAccumulator -> Csr -> valid_links"
@@ -82,7 +82,7 @@ cost: {ram: "событий в логе растёт без ограничени
 droppable: {value: false, why: "без вытеснения любой встреченный токен остаётся в фокусе навечно — рост без границ"}
 sources: ["../../drafts/axmv2-deck-map.md", "../../drafts/axmv2-time-module.md"]
 open_questions:
-  - "Кто отвечает за ограничение длины wheel.sequence (открытый вопрос в elements/wheel) — Смерть НЕ отвечает: mark/weight_cut работают над множеством токенов целиком (Store), не над длиной последовательности в Колесе. Разные вещи, вопрос остаётся открытым сам по себе."
+  - "Кто отвечает за ограничение длины epoch.sequence (открытый вопрос в elements/epoch) — Смерть НЕ отвечает: mark/weight_cut работают над множеством токенов целиком (Store), не над длиной последовательности в Колесе. Разные вещи, вопрос остаётся открытым сам по себе."
   - "РЕШЕНО: персистентность лога на диск реализована отдельным элементом elements/persist (save_all/load_all), а не здесь — сознательное разделение. В axmg persist.rs тоже был отдельным модулем от death.rs, но DEATH_LOG_TABLE/encode/decode жили прямо в death.rs; у нас всё целиком в persist, death про redb не знает вообще."
   - "K=3 и квантиль 25% перенесены как есть из axmg, не пересмотрены и не перепроверены на наших данных — открыто, стоит ли эти числа менять."
   - "weight_cut() и mark() вызываются по отдельности вызывающим кодом (как в bin/death_demo.rs) — нет единой функции «один оборот Смерти», которая гарантировала бы порядок (mark потом weight_cut, не наоборот). Порядок важен (weight_cut требует актуального mark), но не закреплён типами."

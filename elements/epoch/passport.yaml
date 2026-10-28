@@ -1,0 +1,68 @@
+# Черновик (status: hypothesis), предложен агентом по прямой команде пользователя.
+# ПЕРЕИМЕНОВАН из "wheel" в "epoch" 2026-10-28, по прямой команде пользователя:
+# механически это циклическая функция шага (вызывается раз за оборот), не
+# отдельная подсистема; код-имя "epoch" уже было записано в Словаре
+# ../../drafts/axmv2-deck-map.md (строка 10, Колесо), просто axmg этому
+# своему правилу не последовал (там структура всё равно WheelState).
+# Метафора "Колесо" остаётся только в прозе этого файла, не в коде/id.
+#
+# Поведение повторяет проверенную axmg (/home/assis/axmg/shelf/src/wheel.rs
+# — файл референса не переименован, только наш код), переписано как своя
+# реализация в elements/epoch/src/lib.rs, протестировано (4/4) и прогнано
+# на реальном файле (bin/epoch_ingest.rs). Отличие от axmg, то, что мы
+# вносим: Surprise (s_static/s_growth/verdict) здесь сознательно НЕ часть
+# этого элемента — это задел на отдельный элемент (Отшельник), не его
+# контракт. См. ../../drafts/axmv2-deck-map.md (Колесо-10) и
+# ../../drafts/axmv2-time-module.md.
+passport_schema: "0.2"
+kind: code
+status: hypothesis
+version: 0.2.0
+role: "Циклический шаг (метафора проекта — Колесо): оборот как единица времени — принимает порцию, дозаписывает в накопленную последовательность, прогоняет слияние на всей накопленной свёртке, штампует last_touched только по реальному касанию"
+
+inputs:
+  - {name: byte_chunk, type: bytes, meaning: "порция (REVOLUTION_CHUNK_BYTES, 64 КБ) — один оборот"}
+
+outputs:
+  - {name: revolution, type: u32, meaning: "номер последнего завершённого оборота"}
+  - {name: last_touched_revolution, type: "map<TokenId,u32>", meaning: "оборот, на котором токен последний раз был прямым элементом свёрнутой последовательности (не через детей, не от простого присутствия без касания)"}
+  - {name: sequence, type: "list<TokenId>", meaning: "текущая накопленная свёрнутая последовательность; растёт между оборотами, окно не ограничено (см. open_questions)"}
+  - {name: new_tokens_count, type: u32, meaning: "число реально рождённых новых примитивов за этот оборот"}
+  - {name: age, type: "fn(TokenId) -> Option<u32>", meaning: "возраст в оборотах = revolution - last_touched_revolution; считается на лету, не хранится"}
+
+depends_on: [{id: core, version_range: ">=0.1.0"}]
+must_not_touch: [смысл, surprise]   # оценка новизны/удивления — отдельный элемент поверх, не контракт этого шага
+
+links_in:
+  - from: core
+    channel: direct
+    format: "Store (intern, level_of, bytes_of, touch, count_of), merge::run"
+    mode: read_write
+    gate: {accepts: [core], rate_limit: "", min_score: {}, provenance_required: false}
+
+contract:
+  requires:
+    - what: "Атомарность оборота: внешние события принимаются только на границе между оборотами, оборот не прерывается"
+      class: invariant
+      status: hypothesis
+      check: {test: "turn() не возвращает управление до схождения волны слияний для этой порции", metric: "", threshold: "выполняется структурой кода (синхронный вызов), не требует отдельного замера"}
+    - what: "last_touched обновляется только при реальном росте счётчика токена в этом обороте, не от простого физического присутствия в последовательности"
+      class: invariant
+      status: hypothesis
+      check: {test: "stale_token_sitting_unchanged_does_not_get_timestamp_refreshed (unit-тест)", metric: "число ложных обновлений штампа", threshold: "0"}
+    - what: "revolution монотонно возрастает на 1 за вызов turn()"
+      class: invariant
+      status: hypothesis
+      check: {test: "revolution(n+1) == revolution(n) + 1", metric: "число нарушений", threshold: "0"}
+  bonus: []
+  guarantees: []
+  known_losses: []
+
+cost: {ram: "", time: "O(длины накопленной последовательности) за оборот — растёт с числом оборотов, не константа; это задокументированное в axmg свойство, не ошибка"}
+droppable: {value: false, why: "без оборотов не из чего взять время (stamp, last_touched); Время и, вероятно, Смерть зависят от этого элемента напрямую"}
+sources: ["../../drafts/axmv2-deck-map.md", "../../drafts/axmv2-time-module.md"]
+open_questions:
+  - "Окно рабочей последовательности не ограничено, и это измеримо расходится с axmg не как стиль, а как факт: tools/compare-axmg на three_kingdoms_zh.txt (1.86 МБ, длина свёртки превышает 100 000) даёт store.len() 114399 (наш) против 107391 (axmg с обрезкой), valid_links 3938 против 955 — обрезка меняет не только память, но и то, что находит PPMI. На файле, где длина свёртки остаётся ниже 100 000 (/tmp/small_test.txt, 400 КБ), оба движка совпадают побитово по всем метрикам (Store, Смерть, PPMI). Проверено отдельно (elements/death/passport.yaml): это НЕ работа Смерти — mark/weight_cut работают над множеством токенов (Store), а не над длиной sequence. Вопрос, кто отвечает за ограничение длины последовательности между оборотами, остаётся открытым, но теперь с измеренной ценой бездействия."
+  - "РЕШЕНО: elements/surprise (Отшельник) реализован и не требует зависимости от этого элемента вообще — s_static/s_growth читают только &Store напрямую, не EpochState. Разделение подтвердилось дешёвым. Остаётся открытым другое: на каждом реальном обороте никто пока не вызывает surprise::s_growth(chunk) и не копит результат в inner[] — без этого вызова у elements/time вид 3 (age_inner) всё ещё без данных (см. elements/time/passport.yaml)."
+  - "cost (time) растёт с длиной накопленной последовательности — не измерено на реальном масштабе дальше одного файла (~335К элементов на 1.86 МБ, see bin/epoch_ingest.rs)."
+note: ""

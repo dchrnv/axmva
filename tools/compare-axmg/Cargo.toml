@@ -1,0 +1,18 @@
+[package]
+name = "compare-axmg"
+version = "0.1.0"
+edition = "2024"
+
+# Инструмент валидации, не формальный элемент проекта (без passport.yaml,
+# index.yaml его не видит, I1). Гоняет один и тот же вход через axmg
+# (референс, path-зависимость только здесь) и через наши elements/*
+# параллельно, сравнивает результат. Это проверка верности порта, не
+# использование axmg как библиотеки в проекте (I25 — axmg остаётся
+# внешним, этот инструмент живёт отдельно от elements/).
+
+[dependencies]
+axmg = { path = "/home/assis/axmg/shelf" }
+axmva-core = { path = "../../elements/core" }
+axmva-epoch = { path = "../../elements/epoch" }
+axmva-death = { path = "../../elements/death" }
+axmva-ppmi = { path = "../../elements/ppmi" }

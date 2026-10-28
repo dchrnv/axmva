@@ -188,7 +188,7 @@ pub fn load_all(path: &Path) -> Result<(Store, DeathLog), LoadError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axmva_wheel::WheelState;
+    use axmva_epoch::EpochState;
 
     fn tmp_db_path(name: &str) -> std::path::PathBuf {
         let mut p = std::env::temp_dir();
@@ -294,17 +294,17 @@ mod tests {
     #[test]
     fn save_all_and_load_all_round_trip() {
         let path = tmp_db_path("save_all_round_trip");
-        let mut wheel = WheelState::new();
-        wheel.turn(b"hello world of axmva", 2);
+        let mut epoch = EpochState::new();
+        epoch.turn(b"hello world of axmva", 2);
 
         let mut death_log = DeathLog::new();
-        death_log.mark(&wheel);
-        death_log.weight_cut(&wheel);
+        death_log.mark(&epoch);
+        death_log.weight_cut(&epoch);
 
-        save_all(&wheel.store, &death_log, &path).expect("save_all");
+        save_all(&epoch.store, &death_log, &path).expect("save_all");
         let (loaded_store, loaded_log) = load_all(&path).expect("load_all");
 
-        assert_eq!(loaded_store.len(), wheel.store.len());
+        assert_eq!(loaded_store.len(), epoch.store.len());
         assert_eq!(loaded_log.events().len(), death_log.events().len());
         assert_eq!(loaded_log.focused_set(), death_log.focused_set());
 

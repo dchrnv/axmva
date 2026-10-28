@@ -12,5 +12,5 @@ edition = "2024"
 [dependencies]
 axmva-core = { path = "../core" }
 axmva-death = { path = "../death" }
-axmva-wheel = { path = "../wheel" }
+axmva-epoch = { path = "../epoch" }
 redb = "4.1.0"

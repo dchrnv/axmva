@@ -1,16 +1,22 @@
-//! elements/wheel: Колесо — оборот как единица времени.
+//! elements/epoch: оборот как единица времени — циклическая функция шага,
+//! вызываемая раз за оборот. Переименован из "wheel" (метафора «Колесо»
+//! остаётся только в документах/комментариях, не в коде) — механически
+//! это просто шаг цикла, и код-имя "epoch" уже было записано в Словаре
+//! deck-map (строка 10, Колесо), хотя сам axmg этому своему правилу не
+//! последовал.
 //!
 //! Один оборот = одна атомарная итерация: принять порцию байт, дописать в
 //! конец накопленной последовательности, прогнать слияние на ВСЕЙ текущей
 //! последовательности (уже свёрнутый префикс просто не даёт новых слияний
 //! сам в себе — это не лишняя работа, это наблюдаемая скорость). Время
-//! внутри системы это номер оборота, не час — штамп ставит только Колесо,
+//! внутри системы это номер оборота, не час — штамп ставит только этот шаг,
 //! на границе между оборотами (оборот не прерывается).
 //!
-//! Поведение повторяет проверенную axmg (wheel.rs), переписано как своя
+//! Поведение повторяет проверенную axmg (wheel.rs — файл реального
+//! референса не переименован, только наш код), переписано как своя
 //! реализация. Отличие: здесь нет Surprise (s_static/s_growth/verdict) —
-//! это отдельный элемент поверх Колеса, не часть его контракта. См.
-//! passport.yaml этого элемента.
+//! это отдельный элемент поверх, не часть контракта. См. passport.yaml
+//! этого элемента.
 
 use axmva_core::{merge, Sequence, Store, TokenId};
 use std::collections::HashMap;
@@ -25,7 +31,7 @@ pub struct TurnReport {
     pub sequence_len: usize,
 }
 
-pub struct WheelState {
+pub struct EpochState {
     pub store: Store,
     pub sequence: Sequence,
     /// Номер последнего завершённого оборота (0 — ничего ещё не подано).
@@ -38,7 +44,7 @@ pub struct WheelState {
     pub last_touched_revolution: HashMap<TokenId, u32>,
 }
 
-impl WheelState {
+impl EpochState {
     pub fn new() -> Self {
         let mut store = Store::new();
         store.init_factory();
@@ -46,7 +52,7 @@ impl WheelState {
     }
 
     pub fn with_store(store: Store) -> Self {
-        WheelState {
+        EpochState {
             store,
             sequence: Sequence { ids: Vec::new(), levels: Vec::new() },
             revolution: 0,
@@ -118,7 +124,7 @@ impl WheelState {
     }
 }
 
-impl Default for WheelState {
+impl Default for EpochState {
     fn default() -> Self {
         Self::new()
     }
@@ -130,60 +136,60 @@ mod tests {
 
     #[test]
     fn revolution_count_matches_chunking() {
-        let mut wheel = WheelState::new();
+        let mut epoch = EpochState::new();
         let bytes = vec![b'a'; axmva_core::REVOLUTION_CHUNK_BYTES * 2 + 1];
-        let reports = wheel.run_corpus(&bytes, 2);
+        let reports = epoch.run_corpus(&bytes, 2);
         assert_eq!(reports.len(), 3);
-        assert_eq!(wheel.revolution, 3);
+        assert_eq!(epoch.revolution, 3);
     }
 
     #[test]
     fn sequence_grows_and_collapses_across_revolutions() {
-        let mut wheel = WheelState::new();
-        wheel.turn(b"ab ab cd cd ab cd ab cd ", 2);
-        let after_first = wheel.sequence.ids.len();
+        let mut epoch = EpochState::new();
+        epoch.turn(b"ab ab cd cd ab cd ab cd ", 2);
+        let after_first = epoch.sequence.ids.len();
         assert!(after_first > 0);
-        wheel.turn(b"ab ab cd cd ab cd ab cd ", 2);
+        epoch.turn(b"ab ab cd cd ab cd ab cd ", 2);
         assert!(
-            wheel.sequence.ids.len() < after_first + 24,
+            epoch.sequence.ids.len() < after_first + 24,
             "вторая порция обязана частично слиться с хвостом первой, не просто дописаться"
         );
     }
 
     #[test]
     fn last_touched_revolution_tracks_direct_fold_presence() {
-        let mut wheel = WheelState::new();
-        wheel.turn(b"xyz", 2);
-        assert_eq!(wheel.revolution, 1);
-        for &id in &wheel.sequence.ids {
-            assert_eq!(wheel.last_touched_revolution.get(&id), Some(&1));
+        let mut epoch = EpochState::new();
+        epoch.turn(b"xyz", 2);
+        assert_eq!(epoch.revolution, 1);
+        for &id in &epoch.sequence.ids {
+            assert_eq!(epoch.last_touched_revolution.get(&id), Some(&1));
         }
     }
 
     #[test]
     fn stale_token_sitting_unchanged_does_not_get_timestamp_refreshed() {
-        let mut wheel = WheelState::new();
-        wheel.turn(b"ab ab", 2);
-        let ab = wheel
+        let mut epoch = EpochState::new();
+        epoch.turn(b"ab ab", 2);
+        let ab = epoch
             .sequence
             .ids
             .iter()
             .copied()
-            .find(|&id| wheel.store.bytes_of(id) == b"ab")
+            .find(|&id| epoch.store.bytes_of(id) == b"ab")
             .expect("'ab' должен был слиться в композит");
-        assert_eq!(wheel.last_touched_revolution.get(&ab), Some(&1));
+        assert_eq!(epoch.last_touched_revolution.get(&ab), Some(&1));
 
-        wheel.turn(b"zzz", 2);
-        wheel.turn(b"zzz", 2);
+        epoch.turn(b"zzz", 2);
+        epoch.turn(b"zzz", 2);
         assert!(
-            wheel.sequence.ids.contains(&ab),
+            epoch.sequence.ids.contains(&ab),
             "'ab' обязан физически оставаться в последовательности"
         );
         assert_eq!(
-            wheel.last_touched_revolution.get(&ab),
+            epoch.last_touched_revolution.get(&ab),
             Some(&1),
             "штамп времени не должен переписываться, пока токен просто лежит нетронутым"
         );
-        assert_eq!(wheel.age(ab), Some(2), "возраст = текущий оборот (3) - last_touched (1)");
+        assert_eq!(epoch.age(ab), Some(2), "возраст = текущий оборот (3) - last_touched (1)");
     }
 }

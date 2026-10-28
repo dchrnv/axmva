@@ -4,7 +4,7 @@
 //! проверить персистентность, а не просто переиспользование памяти.
 
 use axmva_death::DeathLog;
-use axmva_wheel::WheelState;
+use axmva_epoch::EpochState;
 use std::env;
 use std::fs;
 use std::path::Path;
@@ -23,14 +23,14 @@ fn main() {
             let bytes = fs::read(&file).unwrap_or_else(|e| panic!("не удалось прочитать {file}: {e}"));
 
             println!("=== persist: save ===");
-            let mut wheel = WheelState::new();
-            wheel.run_corpus(&bytes, BIRTH_THRESHOLD);
+            let mut epoch = EpochState::new();
+            epoch.run_corpus(&bytes, BIRTH_THRESHOLD);
             let mut log = DeathLog::new();
-            log.mark(&wheel);
-            log.weight_cut(&wheel);
+            log.mark(&epoch);
+            log.weight_cut(&epoch);
 
-            println!("Полка: {} примитивов, в фокусе: {}", wheel.store.len(), log.focused_set().len());
-            axmva_persist::save_all(&wheel.store, &log, db_path).expect("save_all");
+            println!("Полка: {} примитивов, в фокусе: {}", epoch.store.len(), log.focused_set().len());
+            axmva_persist::save_all(&epoch.store, &log, db_path).expect("save_all");
             println!("Сохранено в {db_path:?}");
         }
         "load" => {

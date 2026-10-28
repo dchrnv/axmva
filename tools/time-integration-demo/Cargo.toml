@@ -1,0 +1,15 @@
+[package]
+name = "time-integration-demo"
+version = "0.1.0"
+edition = "2024"
+
+# Инструмент, не формальный элемент (без passport.yaml). Показывает, как
+# самостоятельная библиотека axtime (без зависимостей от токенов) стыкуется
+# с конкретным доменом axmva — closes elements/time/passport.yaml's open
+# question: "никто пока не вызывает s_growth на каждом реальном обороте".
+
+[dependencies]
+axtime = { path = "../../elements/time" }
+axmva-core = { path = "../../elements/core" }
+axmva-epoch = { path = "../../elements/epoch" }
+axmva-surprise = { path = "../../elements/surprise" }
