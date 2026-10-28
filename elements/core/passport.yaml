@@ -1,0 +1,63 @@
+# Черновик (status: hypothesis), предложен агентом по прямой команде пользователя
+# на основе ../../drafts/axmv2-core-passport.md. Не финал — cost ещё не известен
+# (открытый вопрос пользователя), см. open_questions.
+passport_schema: "0.2"
+kind: code
+status: hypothesis
+version: 0.1.0
+role: "Детерминированное ядро-архиватор: приём байтов, слияние частых пар в токены, неизменяемое хранение"
+
+inputs:
+  - {name: bytes_stream, type: bytes, meaning: "входная порция для токенизации (корпус или поток)"}
+
+outputs:
+  - {name: token_level, type: u32, meaning: "уровень токена (высота в дереве слияний)"}
+  - {name: token_children, type: "list<TokenId>", meaning: "дети токена"}
+  - {name: token_parents, type: "list<TokenId>", meaning: "родители токена (обратное дерево)"}
+  - {name: token_counter, type: u64, meaning: "счётчик встреч токена"}
+  - {name: unpack, type: bytes, meaning: "развёртка токена обратно в байты, без потерь"}
+  - {name: folded_stream, type: "list<TokenId>", meaning: "свёрнутая последовательность чанка"}
+  - {name: new_tokens, type: "list<TokenId>", meaning: "токены, родившиеся за приём порции"}
+
+depends_on: []
+must_not_touch: [смысл, забывание, ассоциации, время]   # это библиотеки поверх ядра, не ядро
+
+links_in:
+  - from: external-input
+    channel: ingest
+    format: "bytes + тег источника (provenance)"
+    mode: read
+    gate:
+      accepts: [external-input]
+      rate_limit: ""
+      min_score: {}
+      provenance_required: true
+
+contract:
+  requires:
+    - what: "Детерминизм: тот же вход даёт те же id"
+      class: invariant
+      status: hypothesis
+      check: {test: "повторный прогон одной и той же порции", metric: "доля совпавших id", threshold: "100% — детерминизм бинарен, не калибруется"}
+    - what: "Без потерь: развёртка (unpack) равна входу"
+      class: invariant
+      status: hypothesis
+      check: {test: "round-trip: pack -> unpack -> сравнение с исходными байтами", metric: "доля побайтовых совпадений", threshold: "100% — побайтовое совпадение, 0 расхождений"}
+    - what: "Не пересчитывать уже существующее"
+      class: invariant
+      status: hypothesis
+      check: {test: "повторная подача уже виденной пары не создаёт новый токен и не меняет id существующего", metric: "число новых токенов / изменённых id на повторе", threshold: "0"}
+    - what: "Тело токена не меняется после рождения (меняется только счётчик)"
+      class: invariant
+      status: hypothesis
+      check: {test: "сравнение тела токена до/после последующих приёмов", metric: "число изменившихся полей тела, кроме счётчика", threshold: "0"}
+  bonus: []
+  guarantees: [детерминизм, "неизменяемость тела токена после рождения"]
+  known_losses: []
+
+cost: {ram: "", time: ""}
+droppable: {value: false, why: "это ядро проекта, сборка строится вокруг него"}
+sources: ["../../drafts/axmv2-core-passport.md"]
+open_questions:
+  - "cost (ram/time) не измерен и пока не известен (прямой ответ пользователя: «не знаю») — не блокер, но требует возврата, когда появятся первые замеры."
+note: ""

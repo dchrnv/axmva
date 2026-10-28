@@ -1,0 +1,64 @@
+# Черновик (status: hypothesis), предложен агентом по прямой команде пользователя
+# на основе ../../drafts/axmv2-time-module.md. Набор v1: виды времени 1 (порядковое),
+# 2 (относительное "сейчас"), 3 (внутреннее, S-growth), 5 (циклическое/период).
+# ВАЖНО, см. open_questions: реальный источник stamp/last_touched/inner — «Колесо»
+# (Wheel), не core напрямую; Колесо пока не оформлено как отдельный passport-элемент.
+passport_schema: "0.2"
+kind: code
+status: hypothesis
+version: 0.1.0
+role: "Библиотека времени поверх ядра: порядковое время, относительный возраст, внутренняя длительность (S-growth), период повторения токена"
+
+inputs:
+  - {name: wheel_tick, type: u32, meaning: "номер оборота/тика (источник де-факто: Колесо в axmg, см. open_questions)"}
+  - {name: last_touched, type: "map<TokenId,u32>", meaning: "оборот последнего касания токена (источник: Колесо)"}
+  - {name: inner_series, type: "array<f32>", meaning: "накопленный S-growth на конец каждого оборота (источник: Колесо)"}
+
+outputs:
+  - {name: stamp, type: u32, meaning: "порядковый номер текущего оборота"}
+  - {name: age, type: u32, meaning: "сейчас − last_touched; считается на лету, не хранится"}
+  - {name: age_inner, type: f32, meaning: "inner[сейчас] − inner[last_touched]; возраст в накопленном S-growth"}
+  - {name: period, type: "Option<u32>", meaning: "период появления токена по оборотам, если истории достаточно"}
+
+depends_on: [{id: core, version_range: ">=0.1.0"}]
+must_not_touch: [смысл, забывание, ассоциации]
+
+links_in:
+  - from: core
+    channel: direct
+    format: "token outputs (counter, level, children, parents)"
+    mode: read
+    gate: {accepts: [core], rate_limit: "", min_score: {}, provenance_required: false}
+
+contract:
+  requires:
+    - what: "stamp монотонно возрастает по оборотам"
+      class: invariant
+      status: hypothesis
+      check: {test: "stamp(n+1) > stamp(n) для последовательных оборотов", metric: "число нарушений порядка", threshold: "0"}
+    - what: "age неотрицателен и не кэшируется между вызовами с разным «сейчас»"
+      class: invariant
+      status: hypothesis
+      check: {test: "age всегда >= 0 для любого зарегистрированного токена", metric: "число отрицательных значений", threshold: "0"}
+    - what: "inner (S-growth) не убывает по оборотам"
+      class: invariant
+      status: hypothesis
+      check: {test: "inner[t+1] >= inner[t]", metric: "число убывающих переходов", threshold: "0"}
+    - what: "period определён только когда истории оборотов достаточно"
+      class: target
+      status: hypothesis
+      check: {test: "", metric: "", threshold: ""}
+  bonus: []
+  guarantees: ["порядковое время (вид 1) как база, не отменяется другими видами"]
+  known_losses: []
+
+cost: {ram: "", time: ""}
+droppable: {value: null, why: "не ясно само по себе: зависит от того, что из надстройки (deck-map) реально требует эти виды времени после проверки правилом линзы — пока не измерено"}
+sources: ["../../drafts/axmv2-time-module.md"]
+open_questions:
+  - "Реальный источник stamp/last_touched/inner — «Колесо» (Wheel), не core: Time читает их у Колеса, который сейчас работает в axmg, но не оформлен как отдельный passport-элемент в этом проекте. depends_on ниже указывает только core; ссылку на wheel (и его собственный passport) нужно добавить, когда Колесо получит формализацию. Это прямое следствие «правила линзы» из drafts/axmv2-core-passport.md — без явного элемента-источника stamp/last_touched/inner не из чего выводить формально."
+  - "period завязан на историю оборотов, в которых токен был в свёртке — механизм хранения этой истории сам открыт (развилка «общая история» в drafts/axmv2-deck-map.md, Колесо-10)."
+  - "Смежная развилка (не предмет этого элемента, но из того же черновика): жёсткое окно K=3 в Смерти (замерено: +13–23% сжатия на Git) против ретенции с затуханием — затухание остаётся гипотезой, менять решение можно только после теста против K=3."
+  - "Считать ли «оборот» агента равным одному событию, или оставить порцию входа как единицу — не решено."
+  - "cost (ram/time) не измерен."
+note: ""

@@ -27,5 +27,12 @@ dist/
 build/
 *.log
 
+# Rust
+target/
+
 # Generated, not source of truth (I1: index строится сканом)
 index.yaml
+
+# input/: ручной ввод корпусов, не исходники проекта
+input/*
+!input/README.md

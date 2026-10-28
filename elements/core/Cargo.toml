@@ -1,0 +1,13 @@
+[package]
+name = "axmva-core"
+version = "0.1.0"
+edition = "2024"
+
+# Реализация elements/core (см. passport.yaml рядом). Алгоритм повторяет
+# проверенную, отлаженную версию axmg (/home/assis/axmg/shelf) — Store +
+# generational merge — перенесён и переписан как своя реализация этого
+# проекта, не внешняя зависимость. axmg — референс, доказавший, что идея
+# работает, не часть этого дерева (I25).
+
+[dependencies]
+sha2 = "0.10"
