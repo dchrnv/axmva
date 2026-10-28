@@ -7,9 +7,15 @@ edition = "2024"
 # самостоятельная библиотека axtime (без зависимостей от токенов) стыкуется
 # с конкретным доменом axmva — closes elements/time/passport.yaml's open
 # question: "никто пока не вызывает s_growth на каждом реальном обороте".
+#
+# axtime теперь внешний репозиторий (github.com/dchrnv/axtime), подключён
+# тем же способом, что axmg в tools/compare-axmg — локальный path к
+# сестринскому чекауту на этой машине. Портируемость на другую машину
+# через это не гарантирована (тот же известный компромисс, что у axmg) —
+# для публикации самого axmva это нужно будет сменить на git-зависимость.
 
 [dependencies]
-axtime = { path = "../../elements/time" }
+axtime = { path = "/home/assis/axtime" }
 axmva-core = { path = "../../elements/core" }
 axmva-epoch = { path = "../../elements/epoch" }
 axmva-surprise = { path = "../../elements/surprise" }
