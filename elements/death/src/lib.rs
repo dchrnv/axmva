@@ -1,4 +1,4 @@
-//! elements/death: Смерть — generational GC без sweep, только основа.
+//! elements/death: Смерть — generational GC без sweep.
 //!
 //! Смерть не мутирует тело токена в Store (оно неизменно, см. elements/core)
 //! и не удаляет его — вместо этого append-only лог накапливает события
@@ -11,17 +11,25 @@
 //! составу (дети) от корней: узел жив, если достижим через живого родителя,
 //! даже если сам давно не встречался напрямую.
 //!
-//! Повторяет основу проверенной axmg (death.rs). Сознательно НЕ перенесено
-//! (глубина, не основа): `weight_cut` (срез по весу PPMI среди пограничных)
-//! и персистентность на диск — см. passport.yaml, open_questions.
+//! `weight_cut` — второй, отдельный проход: среди ПОГРАНИЧНЫХ (достижимых,
+//! но не корней напрямую) квантиль 25% с наименьшим накопленным PPMI-весом
+//! живых связей уходит в Unfocus. "Живая связь" — оба конца ещё достижимы;
+//! связь с уже мёртвым не в счёт. При равном весе одноконтекстные (меньше
+//! валидных связей) уходят раньше.
+//!
+//! Повторяет axmg (death.rs). Персистентность на диск по-прежнему не
+//! перенесена — остаётся глубиной, см. passport.yaml, open_questions.
 
 use axmva_core::{Store, TokenId};
+use axmva_ppmi::{self as ppmi, filter_by_min_level, CooAccumulator, ContextExtractor, Window};
 use axmva_wheel::WheelState;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// K из axmg ("Корневое множество... K=3 оборота"), перенесено как есть —
 /// решение не пересматривалось, только перенесено (см. open_questions).
 pub const ROOT_WINDOW_REVOLUTIONS: u32 = 3;
+/// Правка 6 (axmg): доля пограничных, срезаемых по весу за один проход.
+pub const WEIGHT_CUT_QUANTILE: f64 = 0.25;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FocusEvent {
@@ -37,6 +45,13 @@ pub struct MarkOutcome {
     pub newly_focused: usize,
     pub newly_unfocused: usize,
     pub unchanged: usize,
+}
+
+/// Результат одного вызова `DeathLog::weight_cut`.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct WeightCutOutcome {
+    pub borderline_count: usize,
+    pub cut_count: usize,
 }
 
 /// Корневое множество на текущий момент Колеса.
@@ -88,6 +103,12 @@ pub struct DeathLog {
 impl DeathLog {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Собрать из уже готовых частей (например, после восстановления с
+    /// диска — см. elements/persist) без повторного прохода mark/replay.
+    pub fn from_parts(events: Vec<FocusEvent>, focused: HashSet<TokenId>) -> Self {
+        Self { events, focused }
     }
 
     /// Пересчитать достижимость для текущего состояния Колеса и записать
@@ -150,6 +171,60 @@ impl DeathLog {
         }
 
         outcome
+    }
+
+    /// Срез по весу (Правка 6) среди ПОГРАНИЧНЫХ (достижимых, но не корней
+    /// напрямую) — квантиль 25% с наименьшим накопленным PPMI-весом живых
+    /// связей уходит в Unfocus. Тай-брейк при равном весе — одноконтекстные
+    /// (меньше валидных связей) раньше в очереди на срез. Требует, чтобы
+    /// `mark()` уже был вызван для этого состояния Колеса — срез работает
+    /// над уже размеченным достижимым множеством, не пересчитывает его.
+    pub fn weight_cut(&mut self, wheel: &WheelState) -> WeightCutOutcome {
+        let roots = root_set(wheel);
+        let reachable = reachable_set(&wheel.store, &roots);
+        let borderline: Vec<TokenId> = reachable.iter().copied().filter(|id| !roots.contains(id)).collect();
+
+        // Вес = накопленный PPMI-вес живых связей (перевёрнутая полка,
+        // окно 2..5, тот же модуль PPMI, что судит поток в Справедливости/Звезде).
+        let window = Window::range(2, 5);
+        let events = window.extract(&wheel.store, &wheel.sequence.ids);
+        let filtered = filter_by_min_level(&wheel.store, events, 2);
+        let mut coo = CooAccumulator::new();
+        coo.accumulate(&filtered);
+        let csr = coo.bake_to_csr();
+        let valid = ppmi::valid_links(&csr, ppmi::DEFAULT_FREQUENCY_FLOOR, ppmi::DEFAULT_PPMI_THRESHOLD);
+
+        let mut weight: HashMap<TokenId, f64> = HashMap::new();
+        let mut diversity: HashMap<TokenId, usize> = HashMap::new();
+        for entry in &valid {
+            // "живая связь" — оба конца ещё достижимы; связь с уже мёртвым не в счёт.
+            if reachable.contains(&entry.token) && reachable.contains(&entry.context) {
+                *weight.entry(entry.token).or_insert(0.0) += entry.ppmi;
+                *diversity.entry(entry.token).or_insert(0) += 1;
+            }
+        }
+
+        let mut scored: Vec<(TokenId, f64, usize)> = borderline
+            .iter()
+            .map(|&id| (id, weight.get(&id).copied().unwrap_or(0.0), diversity.get(&id).copied().unwrap_or(0)))
+            .collect();
+        // Возрастание по весу; при равном весе одноконтекстные (меньшее
+        // разнообразие) раньше; TokenId последним членом — детерминизм.
+        scored.sort_by(|a, b| {
+            a.1.partial_cmp(&b.1).unwrap().then_with(|| a.2.cmp(&b.2)).then_with(|| a.0.cmp(&b.0))
+        });
+
+        let cut_count = ((scored.len() as f64) * WEIGHT_CUT_QUANTILE).round() as usize;
+        let mut newly_unfocused = 0usize;
+        for &(id, _, _) in scored.iter().take(cut_count) {
+            if self.focused.contains(&id) {
+                self.events.push(FocusEvent::Unfocus { token: id, revolution: wheel.revolution });
+                self.focused.remove(&id);
+                newly_unfocused += 1;
+            }
+        }
+
+        WeightCutOutcome { borderline_count: borderline.len(), cut_count: newly_unfocused }
     }
 
     pub fn events(&self) -> &[FocusEvent] {
@@ -277,5 +352,36 @@ mod tests {
 
         let replayed = DeathLog::replay(log.events());
         assert_eq!(replayed, *log.focused_set(), "replay обязан дать то же множество, что накопленное состояние");
+    }
+
+    #[test]
+    fn weight_cut_removes_roughly_a_quarter_of_borderline_tokens() {
+        let mut wheel = WheelState::new();
+        let text = b"the cat sat on the mat, the cat sat on the mat, the cat ran to the mat, \
+                     the dog sat on the log, the dog sat on the log, the dog ran to the log, \
+                     a bird flew over the tree, a bird flew over the tree, a bird sang in the tree";
+        wheel.turn(text, 2);
+        let mut log = DeathLog::new();
+        log.mark(&wheel);
+
+        let outcome = log.weight_cut(&wheel);
+        assert!(outcome.borderline_count > 0, "должны быть пограничные (достижимые не-корни) на таком тексте");
+        let expected = ((outcome.borderline_count as f64) * WEIGHT_CUT_QUANTILE).round() as usize;
+        assert_eq!(outcome.cut_count, expected, "срез обязан снять ровно квантиль 25% (с округлением)");
+    }
+
+    #[test]
+    fn weight_cut_only_acts_on_borderline_not_on_roots() {
+        let mut wheel = WheelState::new();
+        wheel.turn(b"ab ab cd cd ab cd ef ef gh gh ef gh", 2);
+        let mut log = DeathLog::new();
+        log.mark(&wheel);
+        let roots_before = root_set(&wheel);
+
+        log.weight_cut(&wheel);
+
+        for &root in &roots_before {
+            assert!(log.is_focused(root), "срез по весу не имеет права снять корень");
+        }
     }
 }

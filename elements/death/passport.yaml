@@ -1,36 +1,44 @@
 # Черновик (status: hypothesis), предложен агентом по прямой команде пользователя.
-# Основа только: mark() по достижимости (K=3 + фабричное дно), append-only
-# лог Focus/Unfocus, replay. Повторяет эту часть axmg (death.rs), переписано
-# как своя реализация. Протестировано (5/5) и прогнано на реальном файле
-# (bin/death_demo.rs): 114399 примитивов в полке, 16122 (14%) в фокусе.
-# Сознательно НЕ перенесено сейчас (глубина, по прямой команде пользователя
-# 2026-10-28 "давай пока заложим основу, потом глубину"): weight_cut (срез
-# по весу PPMI среди пограничных) и персистентность лога на диск.
+# mark() по достижимости (K=3 + фабричное дно) + weight_cut (срез по весу
+# PPMI среди пограничных) + append-only лог Focus/Unfocus, replay. Повторяет
+# axmg (death.rs), переписано как своя реализация. Протестировано (7/7) и
+# прогнано на реальном файле (bin/death_demo.rs): 114399 примитивов в полке,
+# 16122 (14%) в фокусе после mark, 253 из 1012 пограничных (точно 25%)
+# снято weight_cut. Персистентность появилась отдельным элементом
+# (elements/persist) — этот модуль о ней ничего не знает, только отдаёт
+# events()/focused_set() наружу.
 passport_schema: "0.2"
 kind: code
 status: hypothesis
 version: 0.1.0
-role: "Смерть (основа): generational GC без sweep — mark по достижимости от корней (K=3 оборота + фабричное дно), append-only лог Focus/Unfocus, воскрешение = новая запись Focus"
+role: "Смерть: generational GC без sweep — mark по достижимости от корней (K=3 оборота + фабричное дно), weight_cut по накопленному PPMI-весу среди пограничных, append-only лог Focus/Unfocus, воскрешение = новая запись Focus"
 
 inputs:
-  - {name: wheel_state, type: "&WheelState", meaning: "Store + last_touched_revolution + revolution (источник: elements/wheel)"}
+  - {name: wheel_state, type: "&WheelState", meaning: "Store + sequence + last_touched_revolution + revolution (источник: elements/wheel)"}
 
 outputs:
-  - {name: focused_set, type: "set<TokenId>", meaning: "множество токенов, достижимых от корней прямо сейчас"}
+  - {name: focused_set, type: "set<TokenId>", meaning: "множество токенов, достижимых от корней прямо сейчас (после mark и, опционально, weight_cut)"}
   - {name: focus_events, type: "list<FocusEvent>", meaning: "append-only лог Focus{token,revolution} / Unfocus{token,revolution}"}
   - {name: mark_outcome, type: "{newly_focused, newly_unfocused, unchanged}", meaning: "три естественных исхода одного вызова mark()"}
+  - {name: weight_cut_outcome, type: "{borderline_count, cut_count}", meaning: "сколько пограничных было, сколько реально снято квантилем 25%"}
 
 depends_on:
   - {id: core, version_range: ">=0.1.0"}
   - {id: wheel, version_range: ">=0.1.0"}
-must_not_touch: [смысл, "вес PPMI (weight_cut отложен)"]
+  - {id: ppmi, version_range: ">=0.1.0"}
+must_not_touch: [смысл]
 
 links_in:
   - from: wheel
     channel: direct
-    format: "Store (level_of, get, len), last_touched_revolution, revolution"
+    format: "Store (level_of, get, len), sequence, last_touched_revolution, revolution"
     mode: read
     gate: {accepts: [wheel], rate_limit: "", min_score: {}, provenance_required: false}
+  - from: ppmi
+    channel: direct
+    format: "Window::range(2,5) + filter_by_min_level(2) + CooAccumulator -> Csr -> valid_links"
+    mode: read
+    gate: {accepts: [ppmi], rate_limit: "", min_score: {}, provenance_required: false}
 
 contract:
   requires:
@@ -58,16 +66,24 @@ contract:
       class: invariant
       status: hypothesis
       check: {test: "replay_reconstructs_focused_set_bit_for_bit (unit-тест)", metric: "", threshold: "побитовое совпадение множеств"}
+    - what: "weight_cut снимает ровно округлённый квантиль 25% от числа пограничных (достижимых не-корней)"
+      class: invariant
+      status: hypothesis
+      check: {test: "weight_cut_removes_roughly_a_quarter_of_borderline_tokens (unit-тест) + bin/death_demo.rs на реальном файле: 253 из 1012 = 25.0%", metric: "cut_count / borderline_count", threshold: "0.25 (с округлением до целого)"}
+    - what: "weight_cut никогда не снимает корень — срез работает только над пограничными (reachable \\ roots)"
+      class: invariant
+      status: hypothesis
+      check: {test: "weight_cut_only_acts_on_borderline_not_on_roots (unit-тест)", metric: "число снятых корней", threshold: "0"}
   bonus: []
   guarantees: []
-  known_losses: ["weight_cut не реализован — фокус сейчас шире, чем был бы с полным Смертью (без среза пограничных по весу PPMI)"]
+  known_losses: []
 
-cost: {ram: "событий в логе растёт без ограничения (append-only, персистентности нет)", time: "O(размера полки) на каждый mark() — полный пересчёт достижимости, не инкрементальный"}
-droppable: {value: false, why: "без вытеснения любой встреченный токен остаётся в фокусе навечно — рост без границ; но сама механика пока минимальна (K=3 без weight_cut), это основа, не весь задуманный модуль"}
+cost: {ram: "событий в логе растёт без ограничения (append-only, персистентности нет)", time: "O(размера полки) на каждый mark() — полный пересчёт достижимости, не инкрементальный; weight_cut добавляет полный проход PPMI по текущей sequence"}
+droppable: {value: false, why: "без вытеснения любой встреченный токен остаётся в фокусе навечно — рост без границ"}
 sources: ["../../drafts/axmv2-deck-map.md", "../../drafts/axmv2-time-module.md"]
 open_questions:
-  - "weight_cut (срез по весу, квантиль 25% среди пограничных) требует PPMI/co-occurrence — теперь есть (elements/ppmi, 10/10 тестов, проверен на реальном файле с контролем перемешиванием), но weight_cut сам по себе ещё не написан. Осознанно отложено как «глубина» (прямая команда пользователя 2026-10-28), путь к данным уже готов."
   - "Кто отвечает за ограничение длины wheel.sequence (открытый вопрос в elements/wheel) — Смерть НЕ отвечает: mark/weight_cut работают над множеством токенов целиком (Store), не над длиной последовательности в Колесе. Разные вещи, вопрос остаётся открытым сам по себе."
-  - "Персистентность лога на диск не реализована — только in-memory, без сохранения между запусками."
-  - "K=3 перенесено как есть из axmg, не пересмотрено и не перепроверено на наших данных — открыто, стоит ли это число менять."
+  - "РЕШЕНО: персистентность лога на диск реализована отдельным элементом elements/persist (save_all/load_all), а не здесь — сознательное разделение. В axmg persist.rs тоже был отдельным модулем от death.rs, но DEATH_LOG_TABLE/encode/decode жили прямо в death.rs; у нас всё целиком в persist, death про redb не знает вообще."
+  - "K=3 и квантиль 25% перенесены как есть из axmg, не пересмотрены и не перепроверены на наших данных — открыто, стоит ли эти числа менять."
+  - "weight_cut() и mark() вызываются по отдельности вызывающим кодом (как в bin/death_demo.rs) — нет единой функции «один оборот Смерти», которая гарантировала бы порядок (mark потом weight_cut, не наоборот). Порядок важен (weight_cut требует актуального mark), но не закреплён типами."
 note: ""

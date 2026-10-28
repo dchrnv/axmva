@@ -1,0 +1,75 @@
+# Черновик (status: hypothesis), предложен агентом по прямой команде пользователя.
+# Повторяет проверенную axmg (persist.rs), переписано как своя реализация.
+# Протестировано (5/5, включая детекцию повреждённого лога и побитовое
+# совпадение инкрементального/одноразового save) и прогнано на реальном
+# файле ДВУМЯ ОТДЕЛЬНЫМИ ПРОЦЕССАМИ (bin/persist_demo.rs save|load, не один
+# прогон с общей памятью): сохранили 114399 примитивов + лог Смерти (15869
+# в фокусе), перезапустили процесс с нуля, загрузили — то же число, индекс
+# дедупликации восстановился (повторный intern('a') вернул фабричный id 97,
+# не завёл дубликат).
+passport_schema: "0.2"
+kind: code
+status: hypothesis
+version: 0.1.0
+role: "Персистентность на redb: тело Store (append-only, инкрементальная дозапись) и лог Focus/Unfocus из elements/death в одной ACID-транзакции"
+
+inputs:
+  - {name: store, type: "&Store", meaning: "полка (источник: elements/core)"}
+  - {name: death_log, type: "&DeathLog", meaning: "лог фокуса (источник: elements/death), опционально — save/load работают и без него"}
+
+outputs:
+  - {name: saved_file, type: "redb database", meaning: "файл на диске с телами токенов (BODY_TABLE) и событиями фокуса (DEATH_LOG_TABLE)"}
+  - {name: restored_store, type: Store, meaning: "полка, восстановленная проходом по логу — hash_index/children_arena отстроены заново через intern(), не скопированы напрямую"}
+  - {name: restored_death_log, type: DeathLog, meaning: "лог фокуса, восстановленный из таблицы событий; пустой DeathLog, если таблицы нет (старая база)"}
+
+depends_on:
+  - {id: core, version_range: ">=0.1.0"}
+  - {id: death, version_range: ">=0.1.0"}
+must_not_touch: [смысл]
+
+links_in:
+  - from: core
+    channel: direct
+    format: "Store (get, len, intern, hash_of, bytes_of, count_of)"
+    mode: read
+    gate: {accepts: [core], rate_limit: "", min_score: {}, provenance_required: false}
+  - from: death
+    channel: direct
+    format: "DeathLog (events, focused_set, replay, from_parts)"
+    mode: read
+    gate: {accepts: [death], rate_limit: "", min_score: {}, provenance_required: false}
+
+contract:
+  requires:
+    - what: "Счётчики (counts) не персистятся — только тело (level+children); это восстановимый вид, не история"
+      class: invariant
+      status: hypothesis
+      check: {test: "round_trip_preserves_body_and_ids_not_counters (unit-тест)", metric: "count_of после load", threshold: "0 для любого токена"}
+    - what: "Инкрементальный save, вызванный несколько раз, даёт тот же результат, что один save в конце (побитово)"
+      class: invariant
+      status: hypothesis
+      check: {test: "incremental_save_matches_one_shot_save_bit_for_bit (unit-тест)", metric: "", threshold: "побитовое совпадение тела и хешей"}
+    - what: "load восстанавливает dedup-индекс, не только тела — повторный intern() уже существующего состава не плодит дубликат"
+      class: invariant
+      status: hypothesis
+      check: {test: "load_reconstructs_dedup_index_not_just_bodies (unit-тест) + bin/persist_demo.rs: intern('a') после load вернул id 97, не создал новый", metric: "", threshold: "тот же id, длина стора не растёт"}
+    - what: "Повреждённый или переставленный лог даёт Err при загрузке, не тихую рассинхронизацию id"
+      class: invariant
+      status: hypothesis
+      check: {test: "load_detects_corrupt_log_instead_of_silently_desyncing (unit-тест)", metric: "", threshold: "Err, не Ok с неверными id"}
+    - what: "save_all/load_all восстанавливают и Store, и DeathLog согласованно в одной транзакции"
+      class: invariant
+      status: hypothesis
+      check: {test: "save_all_and_load_all_round_trip (unit-тест) + bin/persist_demo.rs save|load как два отдельных процесса", metric: "", threshold: "focused_set после load == focused_set до save"}
+  bonus: []
+  guarantees: []
+  known_losses: ["счётчики (counts) не персистятся — после перезапуска age/surprise, завязанные на счётчик, видят его с нуля, не историю встреч"]
+
+cost: {ram: "", time: "O(длины недозаписанного хвоста) на save; O(размера полки) на load — полный replay через intern()"}
+droppable: {value: true, why: "без персистентности всё работает в памяти одного процесса — просто не переживает перезапуск; ничего из уже построенного технически не зависит от этого элемента"}
+sources: ["../../drafts/axmv2-core-passport.md"]
+open_questions:
+  - "Таймлайн/версии (TimelineEntry в axmg) не перенесены — только тела и лог фокуса, без отдельной истории метаданных сессий."
+  - "Многопроцессный/многопоточный доступ к одному redb-файлу не проверен — bin/persist_demo.rs запускает save и load строго по очереди, не параллельно."
+  - "Счётчики не персистятся (сознательное решение, как в axmg) — но это значит, что после перезапуска S-growth/S-static (elements/surprise) и возраст (elements/time) видят полку как будто она только что всё узнала, без реальной истории частот. Не решено, важно ли это для целей проекта."
+note: ""

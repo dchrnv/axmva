@@ -3,13 +3,13 @@ name = "axmva-death"
 version = "0.1.0"
 edition = "2024"
 
-# Реализация elements/death (см. passport.yaml рядом) — только основа:
-# mark() по достижимости от корней (K=3 + фабричное дно), append-only лог
-# Focus/Unfocus, replay. Повторяет эту часть проверенной axmg (death.rs).
-# Сознательно НЕ перенесено (глубина, не основа, см. open_questions):
-# weight_cut (нужен PPMI/co-occurrence, которых пока нет) и персистентность
-# на диск (redb).
+# Реализация elements/death (см. passport.yaml рядом): mark() по
+# достижимости от корней (K=3 + фабричное дно) + weight_cut (срез по весу
+# PPMI среди пограничных) + append-only лог Focus/Unfocus, replay.
+# Повторяет axmg (death.rs). Персистентность на диск (redb) по-прежнему
+# не перенесена — остаётся глубиной, см. open_questions.
 
 [dependencies]
 axmva-core = { path = "../core" }
 axmva-wheel = { path = "../wheel" }
+axmva-ppmi = { path = "../ppmi" }

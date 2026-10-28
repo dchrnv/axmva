@@ -1,0 +1,16 @@
+[package]
+name = "axmva-persist"
+version = "0.1.0"
+edition = "2024"
+
+# Реализация elements/persist (см. passport.yaml рядом). Повторяет
+# проверенную axmg (persist.rs): персистится только тело Store (append-only,
+# инкрементальная дозапись по уже записанной длине) + события DeathLog;
+# счётчики не персистятся (восстановимый вид, не история). load — не просто
+# десериализация, а верификация лога (DanglingChild, CorruptLog).
+
+[dependencies]
+axmva-core = { path = "../core" }
+axmva-death = { path = "../death" }
+axmva-wheel = { path = "../wheel" }
+redb = "4.1.0"

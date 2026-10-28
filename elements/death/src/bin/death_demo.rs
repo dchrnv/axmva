@@ -35,9 +35,19 @@ fn main() {
         );
     }
 
-    println!("\n=== Итог ===");
+    println!("\n=== После mark (только достижимость) ===");
     println!("Всего в полке: {}", wheel.store.len());
-    println!("В фокусе сейчас: {}", log.focused_set().len());
+    println!("В фокусе: {}", log.focused_set().len());
+    println!(
+        "Доля в фокусе: {:.2}%\n",
+        100.0 * log.focused_set().len() as f64 / wheel.store.len() as f64
+    );
+
+    let cut = log.weight_cut(&wheel);
+    println!("=== После weight_cut (срез по весу PPMI среди пограничных) ===");
+    println!("Пограничных (достижимых не-корней): {}", cut.borderline_count);
+    println!("Снято в этом срезе: {}", cut.cut_count);
+    println!("В фокусе теперь: {}", log.focused_set().len());
     println!(
         "Доля в фокусе: {:.2}%",
         100.0 * log.focused_set().len() as f64 / wheel.store.len() as f64
