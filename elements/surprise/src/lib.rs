@@ -116,47 +116,47 @@ pub fn surprise(store: &Store, input: &[u8], threshold: u64) -> SurpriseReport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axmva_wheel::WheelState;
+    use axmva_epoch::EpochState;
 
     #[test]
     fn s_static_perfectly_recognizes_frozen_vocabulary_input() {
-        let mut wheel = WheelState::new();
-        wheel.turn(b"ab ab cd cd ab cd ab cd", 2);
-        let s = s_static(&wheel.store, b"ab ab cd cd ab cd ab cd");
+        let mut epoch = EpochState::new();
+        epoch.turn(b"ab ab cd cd ab cd ab cd", 2);
+        let s = s_static(&epoch.store, b"ab ab cd cd ab cd ab cd");
         assert!(s > 1.0, "уже виденный текст обязан сжаться лучше 1.0, получили {s}");
     }
 
     #[test]
     fn s_static_does_not_mutate_the_store() {
-        let mut wheel = WheelState::new();
-        wheel.turn(b"ab ab cd cd", 2);
-        let len_before = wheel.store.len();
-        let _ = s_static(&wheel.store, b"totally novel gibberish qzx jkv");
-        assert_eq!(wheel.store.len(), len_before, "s_static обязан быть read-only");
+        let mut epoch = EpochState::new();
+        epoch.turn(b"ab ab cd cd", 2);
+        let len_before = epoch.store.len();
+        let _ = s_static(&epoch.store, b"totally novel gibberish qzx jkv");
+        assert_eq!(epoch.store.len(), len_before, "s_static обязан быть read-only");
     }
 
     #[test]
     fn s_growth_does_not_mutate_the_real_store() {
-        let mut wheel = WheelState::new();
-        wheel.turn(b"ab ab cd cd", 2);
-        let len_before = wheel.store.len();
-        let _ = s_growth(&wheel.store, b"ef ef gh gh ef gh", 2);
-        assert_eq!(wheel.store.len(), len_before, "s_growth обязан работать на клоне");
+        let mut epoch = EpochState::new();
+        epoch.turn(b"ab ab cd cd", 2);
+        let len_before = epoch.store.len();
+        let _ = s_growth(&epoch.store, b"ef ef gh gh ef gh", 2);
+        assert_eq!(epoch.store.len(), len_before, "s_growth обязан работать на клоне");
     }
 
     #[test]
     fn s_growth_is_positive_when_novel_repeated_pattern_would_be_born() {
-        let mut wheel = WheelState::new();
-        wheel.turn(b"the cat sat on the mat", 2);
-        let g = s_growth(&wheel.store, b"xy xy xy xy", 2);
+        let mut epoch = EpochState::new();
+        epoch.turn(b"the cat sat on the mat", 2);
+        let g = s_growth(&epoch.store, b"xy xy xy xy", 2);
         assert!(g > 0.0, "новый повторяющийся паттерн обязан дать положительный S-growth, получили {g}");
     }
 
     #[test]
     fn s_growth_is_zero_when_nothing_new_would_be_born() {
-        let mut wheel = WheelState::new();
-        wheel.turn(b"aaaa bbbb", 2);
-        let g = s_growth(&wheel.store, b"q", 2);
+        let mut epoch = EpochState::new();
+        epoch.turn(b"aaaa bbbb", 2);
+        let g = s_growth(&epoch.store, b"q", 2);
         assert_eq!(g, 0.0);
     }
 }

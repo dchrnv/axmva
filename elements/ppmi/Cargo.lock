@@ -10,18 +10,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "axmva-epoch"
+version = "0.1.0"
+dependencies = [
+ "axmva-core",
+]
+
+[[package]]
 name = "axmva-ppmi"
 version = "0.1.0"
 dependencies = [
  "axmva-core",
- "axmva-wheel",
-]
-
-[[package]]
-name = "axmva-wheel"
-version = "0.1.0"
-dependencies = [
- "axmva-core",
+ "axmva-epoch",
 ]
 
 [[package]]

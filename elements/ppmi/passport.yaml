@@ -15,7 +15,7 @@ version: 0.1.0
 role: "Перевёрнутая библиотека: со-встречаемость (окно 2..5) и PPMI — фильтр значимости связи с частотным полом"
 
 inputs:
-  - {name: sequence, type: "list<TokenId>", meaning: "свёрнутая последовательность (источник: elements/wheel), не сырые байты"}
+  - {name: sequence, type: "list<TokenId>", meaning: "свёрнутая последовательность (источник: elements/epoch), не сырые байты"}
   - {name: store, type: "&Store", meaning: "полка для фильтра по уровню (источник: elements/core)"}
 
 outputs:
@@ -31,11 +31,11 @@ links_in:
     format: "Store (level_of, bytes_of для отображения)"
     mode: read
     gate: {accepts: [core], rate_limit: "", min_score: {}, provenance_required: false}
-  - from: wheel
+  - from: epoch
     channel: direct
     format: "sequence (накопленная свёрнутая последовательность)"
     mode: read
-    gate: {accepts: [wheel], rate_limit: "", min_score: {}, provenance_required: false}
+    gate: {accepts: [epoch], rate_limit: "", min_score: {}, provenance_required: false}
 
 contract:
   requires:
@@ -60,7 +60,7 @@ contract:
   known_losses: ["Neighbor и Parent не перенесены — если им когда-то найдётся применение (отличное от того, что показал A4 в axmg), их придётся добавить заново, не просто включить"]
 
 cost: {ram: "COO растёт как O(число различных пар) — на 335К-элементной последовательности дал 2.5М различных пар", time: "не измерено отдельно от общего прогона"}
-droppable: {value: true, why: "ничего из уже построенного (core/wheel/death/time/surprise) технически не зависит от PPMI; зависимость обратная — weight_cut Смерти и мера «контекстного разнообразия» у стихий читали бы его выход, если бы были реализованы"}
+droppable: {value: true, why: "ничего из уже построенного (core/epoch/death/time/surprise) технически не зависит от PPMI; зависимость обратная — weight_cut Смерти и мера «контекстного разнообразия» у стихий читали бы его выход, если бы были реализованы"}
 sources: ["../../drafts/axmv2-deck-map.md"]
 open_questions:
   - "DEFAULT_FREQUENCY_FLOOR=3 и DEFAULT_PPMI_THRESHOLD=2.0 перенесены как есть из axmg, не перепроверены на наших данных."

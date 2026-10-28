@@ -11,5 +11,5 @@ edition = "2024"
 
 [dependencies]
 axmva-core = { path = "../core" }
-axmva-wheel = { path = "../wheel" }
+axmva-epoch = { path = "../epoch" }
 axmva-ppmi = { path = "../ppmi" }

@@ -2,7 +2,7 @@
 //! min_level 1) и смотрим топ значимых ассоциаций по PPMI.
 
 use axmva_ppmi::{filter_by_min_level, score, valid_links, CooAccumulator, ContextExtractor, Window};
-use axmva_wheel::WheelState;
+use axmva_epoch::EpochState;
 use std::env;
 use std::fs;
 
@@ -15,17 +15,17 @@ fn main() {
     let bytes = fs::read(&path).unwrap_or_else(|e| panic!("не удалось прочитать {path}: {e}"));
 
     println!("=== elements/ppmi: перевёрнутая библиотека ===");
-    let mut wheel = WheelState::new();
-    wheel.run_corpus(&bytes, BIRTH_THRESHOLD);
+    let mut epoch = EpochState::new();
+    epoch.run_corpus(&bytes, BIRTH_THRESHOLD);
     println!(
         "Прогнали файл ({} байт), полка: {}, длина свёртки: {}.\n",
         bytes.len(),
-        wheel.store.len(),
-        wheel.sequence.ids.len()
+        epoch.store.len(),
+        epoch.sequence.ids.len()
     );
 
-    let events = Window::range(2, 5).extract(&wheel.store, &wheel.sequence.ids);
-    let filtered = filter_by_min_level(&wheel.store, events, 1);
+    let events = Window::range(2, 5).extract(&epoch.store, &epoch.sequence.ids);
+    let filtered = filter_by_min_level(&epoch.store, events, 1);
     println!("Событий контекста (окно 2..5, level>=1): {}", filtered.len());
 
     let mut coo = CooAccumulator::new();
@@ -39,8 +39,8 @@ fn main() {
 
     println!("Топ-15 ассоциаций по PPMI:");
     for entry in valid.iter().take(15) {
-        let token_bytes = wheel.store.bytes_of(entry.token);
-        let ctx_bytes = wheel.store.bytes_of(entry.context);
+        let token_bytes = epoch.store.bytes_of(entry.token);
+        let ctx_bytes = epoch.store.bytes_of(entry.context);
         let token_text = String::from_utf8_lossy(&token_bytes);
         let ctx_text = String::from_utf8_lossy(&ctx_bytes);
         println!(
@@ -53,7 +53,7 @@ fn main() {
     // просесть (перемешивание рвёт реальные ассоциации).
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
-    let mut shuffled = wheel.sequence.ids.clone();
+    let mut shuffled = epoch.sequence.ids.clone();
     let mut seed: u64 = 42;
     for i in (1..shuffled.len()).rev() {
         let mut h = DefaultHasher::new();
@@ -62,8 +62,8 @@ fn main() {
         let j = (seed as usize) % (i + 1);
         shuffled.swap(i, j);
     }
-    let shuffled_events = Window::range(2, 5).extract(&wheel.store, &shuffled);
-    let shuffled_filtered = filter_by_min_level(&wheel.store, shuffled_events, 1);
+    let shuffled_events = Window::range(2, 5).extract(&epoch.store, &shuffled);
+    let shuffled_filtered = filter_by_min_level(&epoch.store, shuffled_events, 1);
     let mut shuffled_coo = CooAccumulator::new();
     shuffled_coo.accumulate(&shuffled_filtered);
     let shuffled_csr = shuffled_coo.bake_to_csr();

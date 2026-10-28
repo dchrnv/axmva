@@ -14,8 +14,15 @@ name = "axmva-death"
 version = "0.1.0"
 dependencies = [
  "axmva-core",
+ "axmva-epoch",
  "axmva-ppmi",
- "axmva-wheel",
+]
+
+[[package]]
+name = "axmva-epoch"
+version = "0.1.0"
+dependencies = [
+ "axmva-core",
 ]
 
 [[package]]
@@ -24,7 +31,7 @@ version = "0.1.0"
 dependencies = [
  "axmva-core",
  "axmva-death",
- "axmva-wheel",
+ "axmva-epoch",
  "redb",
 ]
 
@@ -33,14 +40,7 @@ name = "axmva-ppmi"
 version = "0.1.0"
 dependencies = [
  "axmva-core",
- "axmva-wheel",
-]
-
-[[package]]
-name = "axmva-wheel"
-version = "0.1.0"
-dependencies = [
- "axmva-core",
+ "axmva-epoch",
 ]
 
 [[package]]

@@ -2,7 +2,7 @@
 //! того же файла против выдуманной тарабарщины.
 
 use axmva_surprise::surprise;
-use axmva_wheel::WheelState;
+use axmva_epoch::EpochState;
 use std::env;
 use std::fs;
 
@@ -15,13 +15,13 @@ fn main() {
     let bytes = fs::read(&path).unwrap_or_else(|e| panic!("не удалось прочитать {path}: {e}"));
 
     println!("=== elements/surprise: обучение ===");
-    let mut wheel = WheelState::new();
-    wheel.run_corpus(&bytes, BIRTH_THRESHOLD);
-    println!("Прогнали файл ({} байт), в полке {} примитивов.\n", bytes.len(), wheel.store.len());
+    let mut epoch = EpochState::new();
+    epoch.run_corpus(&bytes, BIRTH_THRESHOLD);
+    println!("Прогнали файл ({} байт), в полке {} примитивов.\n", bytes.len(), epoch.store.len());
 
     // Знакомый фрагмент: кусок того же файла, который Колесо уже видело.
     let familiar = &bytes[1000..1200];
-    let r1 = surprise(&wheel.store, familiar, BIRTH_THRESHOLD);
+    let r1 = surprise(&epoch.store, familiar, BIRTH_THRESHOLD);
     println!("Знакомый фрагмент (байты 1000..1200 того же файла):");
     println!(
         "  s_static={:.3} s_growth={:.3} score={:.3} verdict={:?}\n",
@@ -30,7 +30,7 @@ fn main() {
 
     // Выдуманная тарабарщина с повторяющимся новым паттерном.
     let novel = b"zqx zqx zqx vwk vwk qzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz";
-    let r2 = surprise(&wheel.store, novel, BIRTH_THRESHOLD);
+    let r2 = surprise(&epoch.store, novel, BIRTH_THRESHOLD);
     println!("Тарабарщина с повторами (\"zqx zqx zqx vwk vwk qzzz...\"):");
     println!(
         "  s_static={:.3} s_growth={:.3} score={:.3} verdict={:?}",

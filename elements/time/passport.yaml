@@ -1,81 +1,84 @@
-# Черновик (status: hypothesis), предложен агентом по прямой команде пользователя
-# на основе ../../drafts/axmv2-time-module.md. Набор v1: виды времени 1 (порядковое),
-# 2 (относительное "сейчас"), 3 (внутреннее, S-growth), 5 (циклическое/период).
-# ОБНОВЛЕНО: elements/wheel теперь реальный элемент (не axmg) и реально отдаёт
-# stamp/last_touched — виды 1 и 2 проверены на настоящем файле (wheel_ingest.rs).
-# elements/surprise теперь тоже реален и даёт функцию s_growth — но накопленный
-# ряд inner[] по оборотам (нужен для age_inner) ещё НЕ собирается: Колесо не
-# вызывает s_growth на каждом реальном обороте, это отдельный шаг интеграции,
-# не сделан. period (вид 5) по-прежнему без источника. См. open_questions.
+# Черновик (status: hypothesis), предложен агентом по прямой команде пользователя.
+# ПЕРЕСОБРАН 2026-10-28: по прямой команде пользователя это теперь самостоятельная,
+# полностью обобщённая библиотека (пакет "axtime", не "axmva-time") — ни слова
+# про TokenId/Store внутри, обобщена по произвольному Id: Eq + Hash + Copy.
+# Виды времени 1,2,3,5 из ../../drafts/axmv2-time-module.md ("Набор для v1").
+# ДОПОЛНЕН тем же днём модулем `wall` (настенное/календарное время, std::time,
+# без внешних зависимостей) — по прямой команде пользователя: библиотека должна
+# быть "красивой и качественной" и предлагать стандартные варианты (время
+# сейчас / по тикам), даже то, что домену axmva сегодня не нужно. Источник
+# уровней — второй черновик, AXMV2/Уровни абстракции/Время.md (уровни 0-8 для
+# ИИ в целом); уровни 5-8 (релятивистское, ветвящееся, петли, метафизическое)
+# сознательно не реализованы — умозрительны, не выражаются реальным кодом.
+# Протестировано (11/11: 7 тиковых + 4 настенных, включая найденный и
+# исправленный off-by-one в индексации накопленного ряда) и прогнано на
+# реальном файле через tools/time-integration-demo (не часть этого пакета —
+# см. depends_on/open_questions, намеренно пусто внутри).
 passport_schema: "0.2"
 kind: code
 status: hypothesis
-version: 0.1.0
-role: "Библиотека времени поверх ядра: порядковое время, относительный возраст, внутренняя длительность (S-growth), период повторения токена"
+version: 0.3.0
+role: "Обобщённый модуль времени: тик + id + момент касания → порядковое время, относительный возраст, внутренняя длительность (накопленный рост), период повторения; плюс независимый модуль настенного времени (std::time) — без знания о токенах, Store или о чём-либо из домена axmva"
 
 inputs:
-  - {name: wheel_tick, type: u32, meaning: "номер оборота/тика (источник де-факто: Колесо в axmg, см. open_questions)"}
-  - {name: last_touched, type: "map<TokenId,u32>", meaning: "оборот последнего касания токена (источник: Колесо)"}
-  - {name: inner_series, type: "array<f32>", meaning: "накопленный S-growth на конец каждого оборота (источник: Колесо)"}
+  - {name: growth_delta, type: f64, meaning: "прирост за текущий тик, передаётся в advance() вызывающим кодом — библиотека не вычисляет его сама"}
+  - {name: touched_id, type: "Id (generic: Eq + Hash + Copy)", meaning: "id, который вызывающий код считает реально тронутым на текущем тике"}
 
 outputs:
-  - {name: stamp, type: u32, meaning: "порядковый номер текущего оборота"}
-  - {name: age, type: u32, meaning: "сейчас − last_touched; считается на лету, не хранится"}
-  - {name: age_inner, type: f32, meaning: "inner[сейчас] − inner[last_touched]; возраст в накопленном S-growth"}
-  - {name: period, type: "Option<u32>", meaning: "период появления токена по оборотам, если истории достаточно"}
+  - {name: stamp, type: u32, meaning: "вид 1: номер текущего тика"}
+  - {name: age, type: "Option<u32>", meaning: "вид 2: сейчас − last_touched; None, если id не касались"}
+  - {name: age_inner, type: "Option<f64>", meaning: "вид 3: inner[сейчас] − inner[last_touched]; возраст в накопленном росте, не в тиках"}
+  - {name: period, type: "Option<f64>", meaning: "вид 5: средний промежуток между встречами id по тикам; None при <2 встречах"}
+  - {name: "wall::now_wall_clock", type: SystemTime, meaning: "календарное «сейчас» — для логов/корреляции с внешним миром, не для измерения длительности"}
+  - {name: "wall::RealTouchLog::age", type: "Option<Duration>", meaning: "реальная (не тиковая) длительность с последнего касания, на Instant — устойчива к скачкам системных часов"}
 
-depends_on:
-  - {id: core, version_range: ">=0.1.0"}
-  - {id: wheel, version_range: ">=0.1.0"}
-  - {id: surprise, version_range: ">=0.1.0"}
-must_not_touch: [смысл, забывание, ассоциации]
+depends_on: []   # осознанно пусто — это и есть смысл "самостоятельной библиотеки"
+must_not_touch: [смысл, забывание, ассоциации, "конкретный домен (токены/Store)"]
 
-links_in:
-  - from: core
-    channel: direct
-    format: "token outputs (counter, level, children, parents)"
-    mode: read
-    gate: {accepts: [core], rate_limit: "", min_score: {}, provenance_required: false}
-  - from: wheel
-    channel: direct
-    format: "revolution, last_touched_revolution"
-    mode: read
-    gate: {accepts: [wheel], rate_limit: "", min_score: {}, provenance_required: false}
-  - from: surprise
-    channel: direct
-    format: "s_growth(store, chunk, threshold) — на реальном обороте, не на произвольном пробе"
-    mode: read
-    gate: {accepts: [surprise], rate_limit: "", min_score: {}, provenance_required: false}
+links_in: []   # ничего не принимает от других элементов проекта напрямую — вызывающий
+                # код (сейчас: tools/time-integration-demo, не формальный элемент)
+                # передаёт generic Tick/Id значения через advance()/touch()
 
 contract:
   requires:
-    - what: "stamp монотонно возрастает по оборотам"
+    - what: "stamp монотонно возрастает на 1 за каждый advance()"
       class: invariant
       status: hypothesis
-      check: {test: "stamp(n+1) > stamp(n) для последовательных оборотов", metric: "число нарушений порядка", threshold: "0"}
-    - what: "age неотрицателен и не кэшируется между вызовами с разным «сейчас»"
+      check: {test: "stamp_matches_number_of_advances (unit-тест)", metric: "", threshold: "stamp == число вызовов advance"}
+    - what: "age(id) сразу после touch(id) на этом же тике равен 0, растёт на следующих тиках"
       class: invariant
       status: hypothesis
-      check: {test: "age всегда >= 0 для любого зарегистрированного токена", metric: "число отрицательных значений", threshold: "0"}
-    - what: "inner (S-growth) не убывает по оборотам"
+      check: {test: "age_is_zero_right_after_touch_and_grows_afterwards (unit-тест)", metric: "", threshold: ""}
+    - what: "touch одного id не меняет last_touched/age другого id (не сбрасывает чужой возраст)"
       class: invariant
       status: hypothesis
-      check: {test: "inner[t+1] >= inner[t]", metric: "число убывающих переходов", threshold: "0"}
-    - what: "period определён только когда истории оборотов достаточно"
-      class: target
+      check: {test: "stale_id_sitting_untouched_does_not_get_age_reset_by_other_touches (unit-тест)", metric: "", threshold: ""}
+    - what: "age_inner отражает накопленный рост между тиками, а не их количество (может быть мал при многих тиках, если рост на них был мал)"
+      class: invariant
       status: hypothesis
-      check: {test: "", metric: "", threshold: ""}
+      check: {test: "age_inner_tracks_accumulated_growth_not_raw_ticks (unit-тест) — нашёл и поймал off-by-one в индексации inner[]", metric: "", threshold: ""}
+    - what: "period — None при менее чем двух встречах id; иначе средний промежуток между соседними встречами"
+      class: invariant
+      status: hypothesis
+      check: {test: "period_is_none_with_fewer_than_two_occurrences + period_is_average_gap_between_occurrences (unit-тесты)", metric: "", threshold: ""}
+    - what: "wall::RealTouchLog::age_at(id, now) — чистая функция явного now и сохранённого Instant, не зависит от реальных часов во время теста"
+      class: invariant
+      status: hypothesis
+      check: {test: "age_at_measures_explicit_duration_not_real_clock + touching_one_id_does_not_affect_another (unit-тесты)", metric: "", threshold: ""}
+    - what: "wall::RealTouchLog построен на Instant (монотонные часы), не SystemTime — устойчив к скачкам системных часов"
+      class: invariant
+      status: hypothesis
+      check: {test: "структурная гарантия типом (Instant в поле, не SystemTime)", metric: "", threshold: ""}
   bonus: []
   guarantees: ["порядковое время (вид 1) как база, не отменяется другими видами"]
-  known_losses: []
+  known_losses: ["Уровни 5-8 второго черновика (AXMV2/Уровни абстракции/Время.md: релятивистское, ветвящееся/квантовое, петли и обратная причинность, метафизическое время) сознательно не реализованы. Это умозрительные уровни для исследовательских архитектур ИИ в целом (PINNs, CTC-сети и т.п.), не выражаются реальным кодом детерминированного байтового движка — не отложено как 'сделаем позже', а честно отмечено как вне досягаемости разумной инженерии сейчас.", "Уровень 4 того же черновика (память и планирование, LTM/STM) не входит в эту библиотеку — это, вероятно, область Смерти (фокус = рабочая память) и будущего recall, не времени как такового."]
 
-cost: {ram: "", time: ""}
-droppable: {value: null, why: "не ясно само по себе: зависит от того, что из надстройки (deck-map) реально требует эти виды времени после проверки правилом линзы — пока не измерено"}
-sources: ["../../drafts/axmv2-time-module.md", "../../elements/wheel/passport.yaml", "../../elements/surprise/passport.yaml"]
+cost: {ram: "O(число различных касавшихся id) — три параллельные структуры (TouchLog, GrowthSeries, OccurrenceLog), не одна", time: "не измерено отдельно от интеграции"}
+droppable: {value: null, why: "как библиотека — не измерено на реальном масштабе дольше одного файла; как зависимость — пока ничто в уже построенном (core/epoch/death/surprise/ppmi/persist) технически не читает её выход, интеграция живёт снаружи (tools/)"}
+sources: ["../../drafts/axmv2-time-module.md", "AXMV2/Уровни абстракции/Время.md (внешний архив Obsidian, не копируется по правилу проекта — уровни понимания времени 0-8 для ИИ в целом, источник модуля wall и явного отказа от уровней 5-8)"]
 open_questions:
-  - "age_inner (вид 3) всё ещё без накопленного ряда: elements/surprise даёt s_growth как функцию для произвольного входа, но никто пока не вызывает её на каждом РЕАЛЬНОМ обороте Колеса и не копит результат в inner[]. Нужна интеграция (Колесо или отдельная обёртка вызывает surprise::s_growth(store, chunk, threshold) до merge этого оборота и аппендит в growing Vec<f64>). stamp и age (виды 1, 2) уже реальны и проверены (elements/wheel, bin/wheel_ingest.rs)."
-  - "period завязан на историю оборотов, в которых токен был в свёртке — механизм хранения этой истории сам открыт (развилка «общая история» в drafts/axmv2-deck-map.md, Колесо-10)."
-  - "Смежная развилка (не предмет этого элемента, но из того же черновика): жёсткое окно K=3 в Смерти (замерено: +13–23% сжатия на Git) против ретенции с затуханием — затухание остаётся гипотезой, менять решение можно только после теста против K=3."
-  - "Считать ли «оборот» агента равным одному событию, или оставить порцию входа как единицу — не решено."
-  - "cost (ram/time) не измерен."
+  - "Интеграция с доменом axmva живёт в tools/time-integration-demo — НЕ формальном элементе (без passport.yaml). Прогнано на реальном файле (three_kingdoms_zh.txt): age_inner у свежих токенов 0.0, у застрявших с начала файла — ~1.1M (накопленный S-growth за 28 оборотов). Нужно решить: это интеграция остаётся инструментом, или становится частью elements/epoch (опциональный growth_delta параметр в turn()), или отдельным элементом-мостом."
+  - "period завязан на историю тиков, в которых id был тронут — при долгой работе история растёт без ограничения (OccurrenceLog), как и TouchLog/GrowthSeries. Ограничения памяти не предусмотрены осознанно (библиотека маленькая, на конечных входах не проверялась на больших масштабах)."
+  - "Смежная развилка (не предмет этой библиотеки, домен-специфична): жёсткое окно K=3 в Смерти (замерено: +13–23% сжатия на Git) против ретенции с затуханием."
+  - "Считать ли «тик» домена agента равным одному событию, или оставить порцию входа как единицу — решение домена (elements/epoch), не этой библиотеки."
 note: ""
