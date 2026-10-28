@@ -1,0 +1,14 @@
+[package]
+name = "axmva-ppmi"
+version = "0.1.0"
+edition = "2024"
+
+# Реализация elements/ppmi (см. passport.yaml рядом). Повторяет проверенную
+# axmg (context.rs + cooc.rs + ppmi.rs), переписано как своя реализация.
+# Основа только: Window::range(2,5) + filter_by_min_level (принятая
+# конфигурация A4 в axmg — Neighbor закрыт структурно, Parent не источник
+# для перевёрнутой библиотеки, оба сознательно не перенесены).
+
+[dependencies]
+axmva-core = { path = "../core" }
+axmva-wheel = { path = "../wheel" }

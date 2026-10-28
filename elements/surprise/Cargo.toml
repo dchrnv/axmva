@@ -1,0 +1,14 @@
+[package]
+name = "axmva-surprise"
+version = "0.1.0"
+edition = "2024"
+
+# Реализация elements/surprise (Отшельник) — см. passport.yaml рядом.
+# Повторяет проверенную axmg (surprise.rs): S-static (сжатие замороженным
+# словарём, read-only через StreamingRecognizer) и S-growth (холостой
+# прогон рождения на клоне Store). Зависит только от core — Store умеет
+# clone, recognizer уже перенесён туда же.
+
+[dependencies]
+axmva-core = { path = "../core" }
+axmva-wheel = { path = "../wheel" }

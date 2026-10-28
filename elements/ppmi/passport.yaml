@@ -1,0 +1,69 @@
+# Черновик (status: hypothesis), предложен агентом по прямой команде пользователя.
+# Основа: Window::range(2,5) + filter_by_min_level(min_level=1) + CooAccumulator
+# -> Csr -> ppmi/valid_links. Повторяет принятую в axmg конфигурацию A4 (context.rs
+# + cooc.rs + ppmi.rs), переписано как своя реализация. Neighbor и Parent
+# сознательно не перенесены — там же решено, что Neighbor закрыт структурно
+# (почти ноль сигнала на финальной свёртке), Parent не источник для перевёрнутой
+# библиотеки (эти рёбра уже лежат прямо в Store).
+# Протестировано (10/10) и прогнано на реальном файле (bin/ppmi_demo.rs) с
+# контролем перемешиванием: 3938 валидных связей на реальном тексте против
+# 1821 на перетасованном, топ-пара по PPMI падает с 14.873 до 0.0.
+passport_schema: "0.2"
+kind: code
+status: hypothesis
+version: 0.1.0
+role: "Перевёрнутая библиотека: со-встречаемость (окно 2..5) и PPMI — фильтр значимости связи с частотным полом"
+
+inputs:
+  - {name: sequence, type: "list<TokenId>", meaning: "свёрнутая последовательность (источник: elements/wheel), не сырые байты"}
+  - {name: store, type: "&Store", meaning: "полка для фильтра по уровню (источник: elements/core)"}
+
+outputs:
+  - {name: csr, type: Csr, meaning: "запечённая co-occurrence матрица: строки/колонки отсортированы, маргиналы посчитаны"}
+  - {name: valid_links, type: "list<PpmiEntry>", meaning: "пары (token, context) с PPMI >= порога среди прошедших частотный пол"}
+
+depends_on: [{id: core, version_range: ">=0.1.0"}]
+must_not_touch: [смысл]   # PPMI — статистика совпадений, не интерпретация
+
+links_in:
+  - from: core
+    channel: direct
+    format: "Store (level_of, bytes_of для отображения)"
+    mode: read
+    gate: {accepts: [core], rate_limit: "", min_score: {}, provenance_required: false}
+  - from: wheel
+    channel: direct
+    format: "sequence (накопленная свёрнутая последовательность)"
+    mode: read
+    gate: {accepts: [wheel], rate_limit: "", min_score: {}, provenance_required: false}
+
+contract:
+  requires:
+    - what: "Запекание CSR детерминировано: порядок накопления COO не влияет на итоговый CSR"
+      class: invariant
+      status: hypothesis
+      check: {test: "bake_is_deterministic_regardless_of_accumulation_order (unit-тест)", metric: "", threshold: "побитовое совпадение row_ptr/col_idx/values"}
+    - what: "Пара с сырым счётом ниже частотного пола не оценивается вовсе (None, не PPMI=0)"
+      class: invariant
+      status: hypothesis
+      check: {test: "below_frequency_floor_is_not_evaluated_at_all (unit-тест)", metric: "", threshold: "None, не 0.0"}
+    - what: "Анти-корреляция схлопывается в 0, не остаётся отрицательной"
+      class: invariant
+      status: hypothesis
+      check: {test: "anticorrelated_pair_floors_to_zero_not_negative (unit-тест)", metric: "", threshold: "PPMI >= 0 всегда"}
+    - what: "На перемешанной последовательности число валидных связей заметно ниже, чем на реальной (контроль различает сигнал от шума накопления)"
+      class: target
+      status: hypothesis
+      check: {test: "bin/ppmi_demo.rs: валидных связей реальных/перетасованных", metric: "отношение valid(real)/valid(shuffled)", threshold: ""}
+  bonus: []
+  guarantees: []
+  known_losses: ["Neighbor и Parent не перенесены — если им когда-то найдётся применение (отличное от того, что показал A4 в axmg), их придётся добавить заново, не просто включить"]
+
+cost: {ram: "COO растёт как O(число различных пар) — на 335К-элементной последовательности дал 2.5М различных пар", time: "не измерено отдельно от общего прогона"}
+droppable: {value: true, why: "ничего из уже построенного (core/wheel/death/time/surprise) технически не зависит от PPMI; зависимость обратная — weight_cut Смерти и мера «контекстного разнообразия» у стихий читали бы его выход, если бы были реализованы"}
+sources: ["../../drafts/axmv2-deck-map.md"]
+open_questions:
+  - "DEFAULT_FREQUENCY_FLOOR=3 и DEFAULT_PPMI_THRESHOLD=2.0 перенесены как есть из axmg, не перепроверены на наших данных."
+  - "Контроль перемешиванием в bin/ppmi_demo.rs — грубый (самодельный хеш-перетасовщик, не криптографический PRNG), на реальном файле дал заметное, но не полное схлопывание (1821 из 3938) — не проверено, достаточно ли этого как статистического контроля, или нужен honest Fisher-Yates с seeded RNG."
+  - "Теперь у Смерти (weight_cut) и у стихий (мера «разнообразие контекстов») есть путь к данным — ни один из них пока не переписан на использование этого элемента."
+note: ""

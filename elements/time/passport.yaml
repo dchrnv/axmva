@@ -3,8 +3,10 @@
 # 2 (относительное "сейчас"), 3 (внутреннее, S-growth), 5 (циклическое/период).
 # ОБНОВЛЕНО: elements/wheel теперь реальный элемент (не axmg) и реально отдаёт
 # stamp/last_touched — виды 1 и 2 проверены на настоящем файле (wheel_ingest.rs).
-# inner (S-growth, вид 3) и period (вид 5) по-прежнему без источника — Surprise
-# не реализован, сознательно не часть Колеса, см. open_questions.
+# elements/surprise теперь тоже реален и даёт функцию s_growth — но накопленный
+# ряд inner[] по оборотам (нужен для age_inner) ещё НЕ собирается: Колесо не
+# вызывает s_growth на каждом реальном обороте, это отдельный шаг интеграции,
+# не сделан. period (вид 5) по-прежнему без источника. См. open_questions.
 passport_schema: "0.2"
 kind: code
 status: hypothesis
@@ -25,6 +27,7 @@ outputs:
 depends_on:
   - {id: core, version_range: ">=0.1.0"}
   - {id: wheel, version_range: ">=0.1.0"}
+  - {id: surprise, version_range: ">=0.1.0"}
 must_not_touch: [смысл, забывание, ассоциации]
 
 links_in:
@@ -38,6 +41,11 @@ links_in:
     format: "revolution, last_touched_revolution"
     mode: read
     gate: {accepts: [wheel], rate_limit: "", min_score: {}, provenance_required: false}
+  - from: surprise
+    channel: direct
+    format: "s_growth(store, chunk, threshold) — на реальном обороте, не на произвольном пробе"
+    mode: read
+    gate: {accepts: [surprise], rate_limit: "", min_score: {}, provenance_required: false}
 
 contract:
   requires:
@@ -63,9 +71,9 @@ contract:
 
 cost: {ram: "", time: ""}
 droppable: {value: null, why: "не ясно само по себе: зависит от того, что из надстройки (deck-map) реально требует эти виды времени после проверки правилом линзы — пока не измерено"}
-sources: ["../../drafts/axmv2-time-module.md", "../../elements/wheel/passport.yaml"]
+sources: ["../../drafts/axmv2-time-module.md", "../../elements/wheel/passport.yaml", "../../elements/surprise/passport.yaml"]
 open_questions:
-  - "inner (S-growth, вид 3) и age_inner без источника: Surprise/Отшельник не реализован, сознательно не часть Колеса (см. elements/wheel/passport.yaml must_not_touch). stamp и age (виды 1, 2) уже реальны и проверены (elements/wheel, bin/wheel_ingest.rs)."
+  - "age_inner (вид 3) всё ещё без накопленного ряда: elements/surprise даёt s_growth как функцию для произвольного входа, но никто пока не вызывает её на каждом РЕАЛЬНОМ обороте Колеса и не копит результат в inner[]. Нужна интеграция (Колесо или отдельная обёртка вызывает surprise::s_growth(store, chunk, threshold) до merge этого оборота и аппендит в growing Vec<f64>). stamp и age (виды 1, 2) уже реальны и проверены (elements/wheel, bin/wheel_ingest.rs)."
   - "period завязан на историю оборотов, в которых токен был в свёртке — механизм хранения этой истории сам открыт (развилка «общая история» в drafts/axmv2-deck-map.md, Колесо-10)."
   - "Смежная развилка (не предмет этого элемента, но из того же черновика): жёсткое окно K=3 в Смерти (замерено: +13–23% сжатия на Git) против ретенции с затуханием — затухание остаётся гипотезой, менять решение можно только после теста против K=3."
   - "Считать ли «оборот» агента равным одному событию, или оставить порцию входа как единицу — не решено."

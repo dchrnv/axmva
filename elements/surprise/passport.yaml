@@ -1,0 +1,56 @@
+# Черновик (status: hypothesis), предложен агентом по прямой команде пользователя.
+# Повторяет проверенную axmg (surprise.rs), переписано как своя реализация.
+# Протестировано (5/5) и прогнано на реальном файле (bin/surprise_demo.rs):
+# знакомый фрагмент -> Familiar, выдуманная тарабарщина с повторами -> NovelGrowth.
+# Это элемент "Отшельник" из drafts/axmv2-deck-map.md.
+passport_schema: "0.2"
+kind: code
+status: hypothesis
+version: 0.1.0
+role: "Отшельник: две метрики удивления рядом — S-static (сжатие замороженным словарём, read-only) и S-growth (прирост словаря на холостом прогоне рождения); диагностика, не гейт"
+
+inputs:
+  - {name: frozen_store, type: "&Store", meaning: "замороженная полка (источник: elements/core), не мутируется"}
+  - {name: probe_input, type: bytes, meaning: "вход, который нужно оценить — не обязательно следующая порция потока"}
+
+outputs:
+  - {name: s_static, type: f64, meaning: "коэффициент сжатия входа существующим словарём без права рождения"}
+  - {name: s_growth, type: f64, meaning: "биты словарного прироста при холостом (на клоне) прогоне рождения"}
+  - {name: surprise_score, type: f64, meaning: "нормализованный скор: 1/s_static + s_growth/(1+s_growth)"}
+  - {name: verdict, type: "Familiar | NovelGrowth | Noise", meaning: "диагностический вывод, не автоматическое решение конвейера"}
+
+depends_on: [{id: core, version_range: ">=0.1.0"}]
+must_not_touch: [смысл]
+
+links_in:
+  - from: core
+    channel: direct
+    format: "Store (clone, lookup, intern, touch, level_of, len), StreamingRecognizer"
+    mode: read
+    gate: {accepts: [core], rate_limit: "", min_score: {}, provenance_required: false}
+
+contract:
+  requires:
+    - what: "s_static — чисто читающая операция (lookup через StreamingRecognizer), не меняет Store"
+      class: invariant
+      status: hypothesis
+      check: {test: "s_static_does_not_mutate_the_store (unit-тест)", metric: "", threshold: "len(store) до == len(store) после"}
+    - what: "s_growth работает на клоне Store, реальный Store не трогается"
+      class: invariant
+      status: hypothesis
+      check: {test: "s_growth_does_not_mutate_the_real_store (unit-тест)", metric: "", threshold: "len(store) до == len(store) после"}
+    - what: "verdict и surprise_score — чистые функции двух чисел (s_static, s_growth), без скрытого состояния"
+      class: invariant
+      status: hypothesis
+      check: {test: "classify_surprise/compute_surprise_score — детерминированные функции, нет мутируемых полей", metric: "", threshold: "структурная гарантия"}
+  bonus: []
+  guarantees: []
+  known_losses: ["verdict это диагностика, не автоматический классификатор — интерпретация 'шум/рост/знакомо' оставлена читающему отчёт, не встроена как решающее правило конвейера"]
+
+cost: {ram: "", time: "s_growth клонирует весь Store на каждый вызов — дороже, чем s_static; не измерено на большом словаре"}
+droppable: {value: null, why: "диагностика полезна, но ничего в уже построенном (core/wheel/death) от неё не зависит технически — зависимость обратная (Время, вид 3, читает её выход)"}
+sources: ["../../drafts/axmv2-deck-map.md", "../../drafts/axmv2-time-module.md"]
+open_questions:
+  - "Нужна ли s_static_focused (ограничение свёртки фокусом из elements/death) прямо сейчас — реализована и протестирована в recognizer, но здесь не вызвана ни в одном сценарии (основа, не глубина)."
+  - "cost (время) при клонировании Store на больших полках (сотни тысяч примитивов) не измерен."
+note: ""

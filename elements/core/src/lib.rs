@@ -8,8 +8,10 @@
 
 pub mod store;
 pub mod merge;
+pub mod recognizer;
 
 pub use merge::{run, run_traced, Sequence};
+pub use recognizer::StreamingRecognizer;
 pub use store::{Store, TokenId};
 
 /// Порция (оборот): столько байт берётся за один проход слияния.
