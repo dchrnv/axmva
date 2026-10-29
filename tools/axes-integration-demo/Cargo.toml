@@ -1,0 +1,17 @@
+[package]
+name = "axes-integration-demo"
+version = "0.1.0"
+edition = "2024"
+
+# Инструмент, не формальный элемент (без passport.yaml). Проверяет
+# axaxes (без зависимости от токенов) на настоящем пуле мер: частота
+# токена и разнообразие контекстов (из elements/ppmi) — первый кандидат
+# для измерений из drafts/axmv2-deck-map.md ("Паспорт стихии"). Закрывает
+# открытый вопрос elements/axes/passport.yaml: "проверка баланса и
+# независимости осей на реальных корпусах не проведена".
+
+[dependencies]
+axaxes = { path = "../../elements/axes" }
+axmva-core = { path = "../../elements/core" }
+axmva-epoch = { path = "../../elements/epoch" }
+axmva-ppmi = { path = "../../elements/ppmi" }
