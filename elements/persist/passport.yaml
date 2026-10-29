@@ -1,16 +1,22 @@
 # Черновик (status: hypothesis), предложен агентом по прямой команде пользователя.
 # Повторяет проверенную axmg (persist.rs), переписано как своя реализация.
-# Протестировано (5/5, включая детекцию повреждённого лога и побитовое
+# Протестировано (8/8, включая детекцию повреждённого лога и побитовое
 # совпадение инкрементального/одноразового save) и прогнано на реальном
 # файле ДВУМЯ ОТДЕЛЬНЫМИ ПРОЦЕССАМИ (bin/persist_demo.rs save|load, не один
-# прогон с общей памятью): сохранили 114399 примитивов + лог Смерти (15869
-# в фокусе), перезапустили процесс с нуля, загрузили — то же число, индекс
-# дедупликации восстановился (повторный intern('a') вернул фабричный id 97,
-# не завёл дубликат).
+# прогон с общей памятью).
+#
+# ИСПРАВЛЕНО 2026-10-29 (по прямой команде пользователя, "исправь сейчас"):
+# save()/save_all() раньше тихо ничего не дописывали и возвращали Ok(()),
+# если им подсунуть несвязанный Store/DeathLog короче уже сохранённого —
+# найдено реальной ошибкой при ручном прогоне (см. журнал решений в
+# ROADMAP.md). Теперь оба явно сверяют весь уже сохранённый префикс
+# (тела токенов и события лога, не только длину) перед дозаписью и
+# возвращают SaveError, если он не совпадает с переданными Store/DeathLog.
+# Сигнатуры изменились: Result<(), redb::Error> -> Result<(), SaveError>.
 passport_schema: "0.2"
 kind: code
 status: hypothesis
-version: 0.1.0
+version: 0.2.0
 role: "Персистентность на redb: тело Store (append-only, инкрементальная дозапись) и лог Focus/Unfocus из elements/death в одной ACID-транзакции"
 
 inputs:
@@ -61,6 +67,10 @@ contract:
       class: invariant
       status: hypothesis
       check: {test: "save_all_and_load_all_round_trip (unit-тест) + bin/persist_demo.rs save|load как два отдельных процесса", metric: "", threshold: "focused_set после load == focused_set до save"}
+    - what: "save/save_all сверяют уже сохранённый префикс (тела + события) с переданными Store/DeathLog и возвращают Err при несовпадении или если переданные короче — не тихий no-op"
+      class: invariant
+      status: hypothesis
+      check: {test: "save_rejects_unrelated_shorter_store_instead_of_silently_doing_nothing + save_rejects_body_mismatch_on_diverging_history + save_all_rejects_event_mismatch (unit-тесты) + воспроизведён и исправлен реальный сценарий через bin/persist_demo.rs", metric: "", threshold: "Err, не Ok(()) при расхождении"}
   bonus: []
   guarantees: []
   known_losses: ["счётчики (counts) не персистятся — после перезапуска age/surprise, завязанные на счётчик, видят его с нуля, не историю встреч"]
