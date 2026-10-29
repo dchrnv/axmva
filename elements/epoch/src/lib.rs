@@ -29,6 +29,10 @@ pub struct TurnReport {
     pub bytes_ingested: usize,
     pub new_tokens_count: usize,
     pub sequence_len: usize,
+    /// Сколько самых старых элементов срезано с начала рабочей
+    /// последовательности в этом обороте из-за `max_sequence_len`. 0, если
+    /// лимит не задан или не достигнут — обрезка видна в отчёте, не тиха.
+    pub truncated_count: usize,
 }
 
 pub struct EpochState {
@@ -42,6 +46,15 @@ pub struct EpochState {
     /// реального касания (рост счётчика) в этом обороте — иначе окно
     /// "возраста" никогда никого не состарит.
     pub last_touched_revolution: HashMap<TokenId, u32>,
+    /// Верхняя граница длины рабочей последовательности (`sequence`), не
+    /// полки (`store` — тела токенов никогда не удаляются). `None` —
+    /// без ограничения (поведение по умолчанию, как раньше): измерено
+    /// (tools/epoch-cost-bench), что стоимость оборота растёт линейно от
+    /// длины последовательности, поэтому суммарная стоимость по всем
+    /// оборотам квадратична от размера непрерывного потока — не проблема
+    /// на разовых файлах в единицы МБ, которые мы тестировали, но станет
+    /// проблемой на многодневном непрерывном потоке без лимита.
+    max_sequence_len: Option<usize>,
 }
 
 impl EpochState {
@@ -57,7 +70,24 @@ impl EpochState {
             sequence: Sequence { ids: Vec::new(), levels: Vec::new() },
             revolution: 0,
             last_touched_revolution: HashMap::new(),
+            max_sequence_len: None,
         }
+    }
+
+    /// Задать верхнюю границу длины рабочей последовательности — явный
+    /// выбор вызывающего кода, не умолчание. При превышении самые старые
+    /// элементы (с начала) срезаются в конце каждого оборота; `Store` не
+    /// затрагивается — тела токенов остаются, срезается только рабочий
+    /// буфер. Величина — решение вызывающего кода: вывести её можно из
+    /// бюджета времени на оборот (cost в passport.yaml), а не скопировать
+    /// готовое число.
+    pub fn with_max_sequence_len(mut self, max: usize) -> Self {
+        self.max_sequence_len = Some(max);
+        self
+    }
+
+    pub fn max_sequence_len(&self) -> Option<usize> {
+        self.max_sequence_len
     }
 
     /// Один оборот: атомарно (Р5 в источнике) — внешний код не видит
@@ -93,9 +123,19 @@ impl EpochState {
             }
         }
 
-        let final_levels = out.ids.iter().map(|&id| self.store.level_of(id)).collect();
-        let sequence_len = out.ids.len();
-        self.sequence = Sequence { ids: out.ids, levels: final_levels };
+        let mut final_ids = out.ids;
+        let truncated_count = match self.max_sequence_len {
+            Some(max) if final_ids.len() > max => {
+                let excess = final_ids.len() - max;
+                final_ids.drain(0..excess);
+                excess
+            }
+            _ => 0,
+        };
+
+        let final_levels = final_ids.iter().map(|&id| self.store.level_of(id)).collect();
+        let sequence_len = final_ids.len();
+        self.sequence = Sequence { ids: final_ids, levels: final_levels };
 
         let new_tokens_count = self.store.len().saturating_sub(vocab_before);
 
@@ -104,6 +144,7 @@ impl EpochState {
             bytes_ingested: chunk.len(),
             new_tokens_count,
             sequence_len,
+            truncated_count,
         }
     }
 
@@ -191,5 +232,52 @@ mod tests {
             "штамп времени не должен переписываться, пока токен просто лежит нетронутым"
         );
         assert_eq!(epoch.age(ab), Some(2), "возраст = текущий оборот (3) - last_touched (1)");
+    }
+
+    #[test]
+    fn unbounded_by_default_sequence_can_exceed_any_arbitrary_length() {
+        // Поведение по умолчанию не изменилось — это регрессионный тест
+        // на старое поведение, важный именно потому, что мы только что
+        // добавили лимит, который легко было бы включить по умолчанию.
+        let mut epoch = EpochState::new();
+        assert_eq!(epoch.max_sequence_len(), None);
+        let report = epoch.turn(b"the quick brown fox jumps over the lazy dog, repeated: the quick brown fox jumps over the lazy dog", 2);
+        assert_eq!(report.truncated_count, 0);
+    }
+
+    #[test]
+    fn with_max_sequence_len_truncates_from_the_front() {
+        let mut epoch = EpochState::new().with_max_sequence_len(5);
+        assert_eq!(epoch.max_sequence_len(), Some(5));
+
+        let report = epoch.turn(b"abcdefghij", 100); // порог высокий -> почти ничего не слипается
+        assert_eq!(epoch.sequence.ids.len(), 5, "длина обязана быть срезана до лимита");
+        assert_eq!(report.sequence_len, 5);
+        assert!(report.truncated_count > 0, "обрезка обязана быть видна в отчёте");
+
+        // Срезаются САМЫЕ СТАРЫЕ (голова), не хвост: последние байты входа
+        // ('g'..'j') должны остаться, первые ('a'..'c') — уйти.
+        let remaining: Vec<u8> = epoch.sequence.ids.iter().map(|&id| epoch.store.bytes_of(id)[0]).collect();
+        assert_eq!(remaining, vec![b'f', b'g', b'h', b'i', b'j']);
+    }
+
+    #[test]
+    fn truncation_does_not_touch_store_bodies_only_the_working_sequence() {
+        let mut epoch = EpochState::new().with_max_sequence_len(3);
+        let before = epoch.store.len();
+        epoch.turn(b"abcdefghij", 100);
+        // Тела токенов (в т.ч. срезанных из sequence) остаются в Store —
+        // обрезается только рабочий буфер, не полка.
+        assert!(epoch.store.len() >= before, "Store только растёт, обрезка sequence не удаляет тела");
+        assert_eq!(epoch.sequence.ids.len(), 3);
+    }
+
+    #[test]
+    fn truncation_keeps_working_across_multiple_turns() {
+        let mut epoch = EpochState::new().with_max_sequence_len(10);
+        for _ in 0..5 {
+            epoch.turn(b"xyzxyzxyzxyzxyzxyzxyzxyzxyzxyz", 2);
+            assert!(epoch.sequence.ids.len() <= 10, "лимит обязан держаться на каждом обороте, не только на первом");
+        }
     }
 }

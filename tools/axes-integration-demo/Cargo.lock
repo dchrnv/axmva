@@ -3,6 +3,20 @@
 version = 4
 
 [[package]]
+name = "axaxes"
+version = "0.1.0"
+
+[[package]]
+name = "axes-integration-demo"
+version = "0.1.0"
+dependencies = [
+ "axaxes",
+ "axmva-core",
+ "axmva-epoch",
+ "axmva-ppmi",
+]
+
+[[package]]
 name = "axmva-core"
 version = "0.1.0"
 dependencies = [
@@ -17,16 +31,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "axmva-surprise"
+name = "axmva-ppmi"
 version = "0.1.0"
 dependencies = [
  "axmva-core",
  "axmva-epoch",
 ]
-
-[[package]]
-name = "axtime"
-version = "0.1.0"
 
 [[package]]
 name = "block-buffer"
@@ -97,16 +107,6 @@ dependencies = [
  "cfg-if",
  "cpufeatures",
  "digest",
-]
-
-[[package]]
-name = "time-integration-demo"
-version = "0.1.0"
-dependencies = [
- "axmva-core",
- "axmva-epoch",
- "axmva-surprise",
- "axtime",
 ]
 
 [[package]]

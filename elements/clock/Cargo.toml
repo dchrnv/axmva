@@ -1,0 +1,16 @@
+[package]
+name = "axmva-clock"
+version = "0.1.0"
+edition = "2024"
+
+# Реализация elements/clock (см. passport.yaml рядом). Домен-специфичная
+# "часы" модели — связывает epoch (оборот/last_touched) + surprise
+# (S-growth этого оборота) + axtime (обобщённые виды времени) для токенов.
+# Закрывает интеграцию, которая раньше жила только в
+# tools/time-integration-demo (не формальном элементе).
+
+[dependencies]
+axtime = { path = "/home/assis/axtime" }
+axmva-core = { path = "../core" }
+axmva-epoch = { path = "../epoch" }
+axmva-surprise = { path = "../surprise" }

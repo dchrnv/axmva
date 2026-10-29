@@ -1,0 +1,77 @@
+# Черновик (status: hypothesis), предложен агентом по прямой команде пользователя.
+# Закрывает интеграцию, которая раньше жила только в tools/time-integration-demo
+# (не формальном элементе, удалён — дублировал бы этот элемент). Протестировано
+# (5/5) и прогнано на реальном файле (bin/clock_ingest.rs): age_inner у свежих
+# токенов 0.0, у застрявших с начала файла — ~1.1M (накопленный S-growth за
+# 28 оборотов) — те же числа, что выдавал прежний демо-инструмент, теперь
+# настоящая часть пайплайна, не ручная сборка.
+passport_schema: "0.2"
+kind: code
+status: hypothesis
+version: 0.1.0
+role: "Домен-специфичные часы: один оборот = S-growth этого чанка (на замороженном сторе, до слияния) + epoch.turn() + передача реальных касаний в axtime::Time<TokenId> — делает все 4 вида времени v1 настоящими для токенов, не только для generic Id"
+
+inputs:
+  - {name: byte_chunk, type: bytes, meaning: "порция (REVOLUTION_CHUNK_BYTES, 64 КБ) — один оборот, тот же вход, что у epoch"}
+  - {name: threshold, type: u64, meaning: "порог рождения для merge::run, передаётся и в epoch.turn, и в surprise::s_growth"}
+
+outputs:
+  - {name: stamp, type: u32, meaning: "вид 1: совпадает с epoch.revolution — проверенный инвариант, не совпадение"}
+  - {name: age, type: "fn(TokenId) -> Option<u32>", meaning: "вид 2: делегирует axtime::Time"}
+  - {name: age_inner, type: "fn(TokenId) -> Option<f64>", meaning: "вид 3: настоящий, не демо-only — growth считается на каждом реальном обороте"}
+  - {name: period, type: "fn(TokenId) -> Option<f64>", meaning: "вид 5: делегирует axtime::Time"}
+  - {name: clock_turn_report, type: ClockTurnReport, meaning: "revolution, bytes_ingested, new_tokens_count, truncated_count (из epoch) + growth (из surprise)"}
+
+depends_on:
+  - {id: core, version_range: ">=0.1.0"}
+  - {id: epoch, version_range: ">=0.1.0"}
+  - {id: surprise, version_range: ">=0.1.0"}
+  - {id: time, version_range: ">=0.1.0"}   # axtime — внешний репозиторий, см. elements/time/passport.yaml
+must_not_touch: [смысл, ассоциации]
+
+links_in:
+  - from: epoch
+    channel: direct
+    format: "turn(chunk, threshold) -> TurnReport; sequence; last_touched_revolution"
+    mode: read_write
+    gate: {accepts: [epoch], rate_limit: "", min_score: {}, provenance_required: false}
+  - from: surprise
+    channel: direct
+    format: "s_growth(store, chunk, threshold) -> f64, на СТОРЕ ДО слияния этого чанка"
+    mode: read
+    gate: {accepts: [surprise], rate_limit: "", min_score: {}, provenance_required: false}
+  - from: time
+    channel: direct
+    format: "Time<TokenId>::{advance, touch, stamp, age, age_inner, period}"
+    mode: read_write
+    gate: {accepts: [time], rate_limit: "", min_score: {}, provenance_required: false}
+
+contract:
+  requires:
+    - what: "stamp() всегда равен epoch().revolution — один тик axtime на один оборот epoch, без расхождений"
+      class: invariant
+      status: hypothesis
+      check: {test: "stamp_always_matches_epoch_revolution (unit-тест)", metric: "", threshold: "равенство на каждом обороте"}
+    - what: "growth считается на СТОРЕ ДО слияния этого чанка (замороженном), не после — иначе S-growth мерил бы прирост относительно уже слитого состояния, не входа"
+      class: invariant
+      status: hypothesis
+      check: {test: "структурный порядок вызовов в turn(): s_growth до epoch.turn() (код-ревью), age_inner_is_real_not_a_demo_only_number (unit-тест)", metric: "", threshold: ""}
+    - what: "age(token) == 0 сразу после оборота, в котором токен реально тронут (делегирование TouchLog не теряет точность)"
+      class: invariant
+      status: hypothesis
+      check: {test: "age_is_zero_right_after_a_turn_touches_the_token (unit-тест)", metric: "", threshold: ""}
+    - what: "age_inner токена, тронутого в обороте с малым последующим ростом, остаётся малым, даже если age (в тиках) растёт — вид 3 не совпадает с видом 2"
+      class: invariant
+      status: hypothesis
+      check: {test: "stale_token_age_inner_grows_slower_when_later_growth_is_small (unit-тест)", metric: "", threshold: ""}
+  bonus: []
+  guarantees: []
+  known_losses: []
+
+cost: {ram: "O(core.Store) + O(axtime.Time за число различных касавшихся id) — две параллельные структуры роста, не одна", time: "s_growth клонирует Store на каждый вызов (см. elements/surprise) — дороже, чем один epoch.turn() без этого элемента; не измерено отдельно"}
+droppable: {value: true, why: "epoch работает и без этого элемента (видели весь путь до этого); age_inner просто остаётся без данных, как было в tools/ до этого коммита"}
+sources: ["../../drafts/axmv2-time-module.md"]
+open_questions:
+  - "cost (время s_growth на каждый оборот — клонирование Store) не измерено на больших полках (сотни тысяч примитивов), только качественно отмечено как дороже epoch без этого элемента."
+  - "Period (вид 5) посчитан из факта присутствия токена в сворачиваемой последовательности на обороте — то же определение, что уже было у axtime/elements/epoch, не новое; не стыкуется напрямую со стадиями ('ступенями') из drafts/axmv2-deck-map.md, которые остаются не реализованы."
+note: ""
