@@ -1,0 +1,106 @@
+# Черновик (status: hypothesis), предложен агентом по прямой команде пользователя.
+# Первый шаг "ассоциативного хвоста колоды" (drafts/axmv2-deck-map.md, карты
+# 7-20: Колесница, Справедливость, Звезда, Луна, Солнце, Суд). По прямой
+# команде пользователя (2026-10-30, выбор из двух предложенных вариантов):
+# сначала честный порт целиком проверенной axmg (recall.rs) — поиск
+# кандидатов по PPMI-соседям вокруг запроса, ранжирование, декодирование —
+# как делали для core/epoch/death/ppmi; разбивка на 6 карт — следующий шаг,
+# когда появятся недостающие зависимости (теги источников по токену,
+# расширенная карта ожиданий Отшельника, метки Дьявола/Башни, журнал
+# лидеров для Суда — ни одного из них пока нет в коде).
+#
+# В процессе порта (не придумано заранее, найдено при сравнении с axmg)
+# обнаружено НАСЛЕДУЕМОЕ свойство самой axmg, не новая ошибка порта: фоллбэк
+# по is_descendant (когда PPMI-граф пуст) НЕ проверяет `focused` вообще, в
+# отличие от основного PPMI-пути — задокументировано тестом
+# fallback_does_not_respect_focused_filter_same_as_axmg, не исправлено тихо.
+#
+# Протестировано (9/9) и прогнано на реальном файле (bin/recall_demo.rs).
+# Побитовое сравнение с axmg (tools/compare-axmg) подтверждено на входах
+# НИЖЕ порога 100К токенов (где Store, PPMI и Recall у обоих совпадают
+# полностью) — три короткие выборки (китайский, английский, кириллица OCR
+# — 300КБ каждая): query_tokens, candidates.len(), сами кандидаты побитово
+# идентичны. На полных реальных файлах (все 4 уже длиннее 100К — это
+# известное, задокументированное в elements/epoch расхождение) Recall
+# расходится вторично, как и Store/PPMI/Death до него — не новое
+# расхождение, то же самое каскадом.
+passport_schema: "0.2"
+kind: code
+status: hypothesis
+version: 0.1.0
+role: "Ассоциативное вспоминание: запрос (байты) → распознанные токены → PPMI-соседи вокруг запроса (с фоллбэком на потомков/предков в Store, если граф пуст) → ранжирование по совместному весу → декодирование в текст"
+
+inputs:
+  - {name: store, type: "&Store", meaning: "полка (источник: elements/core)"}
+  - {name: sequence, type: "&[TokenId]", meaning: "свёрнутая последовательность, по которой строится локальный PPMI-граф (источник: elements/epoch)"}
+  - {name: query_bytes, type: "&[u8]", meaning: "запрос как сырые байты — распознаётся тем же механизмом, что и вход (StreamingRecognizer, read-only)"}
+  - {name: focused, type: "Option<&HashSet<TokenId>>", meaning: "опциональный фильтр активного фокуса (источник: elements/death, focused_set()) — ограничивает кандидатов PPMI-пути, НЕ ограничивает фоллбэк (см. open_questions)"}
+  - {name: config, type: RecallConfig, meaning: "limit, frequency_floor, ppmi_threshold, min_level, window_min/max — те же default, что в axmg"}
+
+outputs:
+  - {name: query_tokens, type: "list<TokenId>", meaning: "распознанные токены запроса"}
+  - {name: candidates, type: "list<RecallCandidate>", meaning: "ранжированные ассоциации: token, bytes, text, score, ppmi, raw_weight, level"}
+  - {name: to_context_string, type: "fn() -> String", meaning: "компактная строка через запятую — то же представление, что у axmg (для передачи в системный промпт, если/когда появится рот)"}
+
+depends_on:
+  - {id: core, version_range: ">=0.1.0"}
+  - {id: ppmi, version_range: ">=0.1.0"}
+  - {id: epoch, version_range: ">=0.1.0"}   # только для dev/bin: EpochState в тестах и recall_demo, сама логика recall() принимает &[TokenId], не EpochState
+must_not_touch: [смысл]   # ранжирование по статистике совпадений, не интерпретация
+
+links_in:
+  - from: core
+    channel: direct
+    format: "Store (get, level_of, bytes_of, count_of); StreamingRecognizer::recognize (read-only)"
+    mode: read
+    gate: {accepts: [core], rate_limit: "", min_score: {}, provenance_required: false}
+  - from: ppmi
+    channel: direct
+    format: "Window::range + filter_by_min_level + CooAccumulator + valid_links — локальный PPMI-граф строится заново на переданной sequence, не читает чужой CSR напрямую"
+    mode: read
+    gate: {accepts: [ppmi], rate_limit: "", min_score: {}, provenance_required: false}
+  - from: death
+    channel: direct
+    format: "Option<&HashSet<TokenId>> (focused_set()) — опционально, элемент не требует этой зависимости напрямую (принимает generic HashSet, не тип axmva_death::DeathLog)"
+    mode: read
+    gate: {accepts: [death], rate_limit: "", min_score: {}, provenance_required: false}
+
+contract:
+  requires:
+    - what: "Пустой запрос (query_bytes = &[]) или пустая sequence дают пустой результат, не панику"
+      class: invariant
+      status: hypothesis
+      check: {test: "recall_empty_query_returns_empty + recall_empty_sequence_returns_empty_even_with_known_query (unit-тесты)", metric: "", threshold: ""}
+    - what: "Сам токен запроса (и его прямые дети) никогда не возвращается как ассоциация к себе"
+      class: invariant
+      status: hypothesis
+      check: {test: "recall_never_returns_the_query_token_itself_as_a_candidate (unit-тест)", metric: "", threshold: ""}
+    - what: "config.limit ограничивает число возвращённых кандидатов сверху"
+      class: invariant
+      status: hypothesis
+      check: {test: "recall_limit_truncates_candidates (unit-тест)", metric: "candidates.len()", threshold: "<= config.limit"}
+    - what: "focused ограничивает кандидатов PPMI-пути (recall_from_csr) — пустой focused даёт пустой результат этого пути"
+      class: invariant
+      status: hypothesis
+      check: {test: "recall_from_csr_respects_focused_filter (unit-тест)", metric: "", threshold: ""}
+    - what: "is_descendant корректен: токен — потомок самого себя; прямые/транзитивные дети — потомки; родитель не потомок своего ребёнка; несвязанные листья — не потомки друг друга"
+      class: invariant
+      status: hypothesis
+      check: {test: "is_descendant_true_for_self_and_real_ancestor_false_for_unrelated (unit-тест)", metric: "", threshold: ""}
+    - what: "Побитовое совпадение с axmg (query_tokens, candidates, score/ppmi с точностью 1e-9) на входах ниже порога 100К токенов, где Store и PPMI-граф у обоих идентичны"
+      class: target
+      status: hypothesis
+      check: {test: "tools/compare-axmg на трёх выборках по 300КБ (китайский, английский, кириллица OCR)", metric: "совпадение query_tokens/candidates побитово", threshold: "идентично на всех трёх"}
+  bonus: []
+  guarantees: []
+  known_losses: ["serde-сериализация RecallConfig/RecallCandidate/RecallResult не перенесена — в axmg она обслуживала передачу в LLM-промпт, которого здесь пока нет; добавить при необходимости не проблема (derive), не архитектурное решение."]
+
+cost: {ram: "O(|sequence|) для построения локального PPMI-графа заново на каждый вызов — не кэшируется между запросами", time: "НЕ измерено отдельно от epoch/ppmi на больших масштабах; есть минимум два O(|sequence| × |query_tokens|) прохода (построение target_query_tokens через is_descendant, и фоллбэк, если PPMI-граф пуст) — на файле ~10МБ (wikitext_2_train.txt) полный прогон compare-axmg не завершился за 180с, но зависание произошло ДО секции recall, в самом epoch.run_corpus() без лимита длины (известная квадратичная стоимость, см. elements/epoch/passport.yaml) — собственная стоимость recall() на таком масштабе отдельно не измерена, это открытый вопрос, не установленный факт медленности"}
+droppable: {value: true, why: "ничего из уже построенного не зависит от recall; это терминальный потребитель (core+ppmi+опционально death), а не источник для других элементов"}
+sources: ["/home/assis/axmg/shelf/src/recall.rs", "../../drafts/axmv2-deck-map.md"]
+open_questions:
+  - "Разбивка на 6 карт (Колесница..Суд) не сделана — этот элемент целиком соответствует одному шву 'запрос -> кадр' deck-map, без лидера/свиты/отражений/рефлекса/журнала лидеров. См. header этого файла."
+  - "Фоллбэк по is_descendant не проверяет focused — унаследовано от axmg как есть (задокументировано тестом, не исправлено). Если когда-то recall должен строго соблюдать фокус Смерти даже в фоллбэке, это решение домена, не бага в порте."
+  - "Собственная стоимость recall() (не epoch/ppmi) на масштабе сотен тысяч элементов sequence не измерена изолированно — bin/epoch-cost-bench измерял только epoch.turn(), не recall()."
+  - "RecallConfig.frequency_floor по умолчанию здесь 1 (как в axmg), а не DEFAULT_FREQUENCY_FLOOR=3 из elements/ppmi — тот же разрыв дефолтов, что уже был в axmg между recall.rs и ppmi.rs, перенесён как есть, не согласован заново."
+note: ""

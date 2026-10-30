@@ -16,3 +16,4 @@ axmva-core = { path = "../../elements/core" }
 axmva-epoch = { path = "../../elements/epoch" }
 axmva-death = { path = "../../elements/death" }
 axmva-ppmi = { path = "../../elements/ppmi" }
+axmva-recall = { path = "../../elements/recall" }

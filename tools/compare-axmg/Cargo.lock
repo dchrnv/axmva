@@ -46,6 +46,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "axmva-recall"
+version = "0.1.0"
+dependencies = [
+ "axmva-core",
+ "axmva-epoch",
+ "axmva-ppmi",
+]
+
+[[package]]
 name = "blake2"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -78,6 +87,7 @@ dependencies = [
  "axmva-death",
  "axmva-epoch",
  "axmva-ppmi",
+ "axmva-recall",
 ]
 
 [[package]]

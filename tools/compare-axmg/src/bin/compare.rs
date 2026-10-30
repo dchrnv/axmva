@@ -101,6 +101,40 @@ fn main() {
     }
     ok &= check_eq("valid_links побитово идентичны", true, links_match);
 
+    // --- Recall: запрос — первые несколько байт самого файла, тела уже
+    // проверены идентичными выше, поэтому распознавание обязано совпасть ---
+    let query_len = bytes.len().min(5);
+    let query_bytes = &bytes[..query_len];
+    let recall_config_ref = axmg::recall::RecallConfig::default();
+    let recall_config_our = axmva_recall::RecallConfig::default();
+
+    let ref_recall = axmg::recall::recall(&ref_wheel.store, &ref_wheel.sequence.ids, query_bytes, None, &recall_config_ref);
+    let our_recall = axmva_recall::recall(&our_epoch.store, &our_epoch.sequence.ids, query_bytes, None, &recall_config_our);
+
+    println!("\n--- Recall ---");
+    ok &= check_eq("query_tokens", ref_recall.query_tokens.clone(), our_recall.query_tokens.clone());
+    ok &= check_eq("candidates.len()", ref_recall.candidates.len(), our_recall.candidates.len());
+    let mut candidates_match = ref_recall.candidates.len() == our_recall.candidates.len();
+    if candidates_match {
+        for (r, o) in ref_recall.candidates.iter().zip(our_recall.candidates.iter()) {
+            let close = r.token == o.token
+                && r.text == o.text
+                && r.raw_weight == o.raw_weight
+                && r.level == o.level
+                && (r.score - o.score).abs() < 1e-9
+                && (r.ppmi - o.ppmi).abs() < 1e-9;
+            if !close {
+                candidates_match = false;
+                println!(
+                    "  !! кандидат разошёлся: ref=({}, {:?}, score={:.6}) наш=({}, {:?}, score={:.6})",
+                    r.token, r.text, r.score, o.token, o.text, o.score
+                );
+                break;
+            }
+        }
+    }
+    ok &= check_eq("кандидаты recall побитово идентичны", true, candidates_match);
+
     println!("\n=== {} ===", if ok { "ВСЁ СОВПАЛО" } else { "ЕСТЬ РАСХОЖДЕНИЯ" });
     std::process::exit(if ok { 0 } else { 1 });
 }
