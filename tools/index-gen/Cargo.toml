@@ -1,0 +1,16 @@
+[package]
+name = "index-gen"
+version = "0.1.0"
+edition = "2024"
+
+# Инструмент, не формальный элемент (без passport.yaml, I1 — это и есть
+# смысл этого инструмента: index.yaml генерируется сканом, список
+# элементов руками не ведётся). Реализует specs/Passport.md, разделы
+# 1/5/6: сканирует elements/*/passport.yaml, считает element_hash по
+# канонической форме (ключи отсортированы, без note/open_questions/
+# sources, рекурсивно включает хеши зависимостей по depends_on), пишет
+# index.yaml в корень с assembly_hash = hash(отсортированные element_hash).
+
+[dependencies]
+serde_yaml = "0.9"
+sha2 = "0.10"
