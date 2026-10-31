@@ -1,0 +1,21 @@
+[package]
+name = "axmva-port"
+version = "0.1.0"
+edition = "2024"
+
+# Реализация elements/port (см. passport.yaml рядом). Единственная дверь
+# между ядром и внешним миром: PortSnapshot — read-only доступ (recognize,
+# recall, surprise, age), Port::receive — единственный мутирующий вход
+# (epoch.turn_tagged + death.mark + death.weight_cut, не обходит ни один
+# из них). Не faithful-порт axmg::port.rs — несколько осознанных
+# расхождений, задокументированных в passport.yaml (мёртвый mmap-путь,
+# дублирующий trie-распознаватель, декоративный Moderator, обход
+# generational-GC через ручной Focus — ни одно не перенесено как есть).
+
+[dependencies]
+axmva-core = { path = "../core" }
+axmva-epoch = { path = "../epoch" }
+axmva-death = { path = "../death" }
+axmva-surprise = { path = "../surprise" }
+axmva-recall = { path = "../recall" }
+axmva-persist = { path = "../persist" }

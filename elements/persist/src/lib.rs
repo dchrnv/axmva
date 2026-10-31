@@ -298,44 +298,63 @@ pub fn save_all(store: &Store, death_log: &DeathLog, path: &Path) -> Result<(), 
 pub fn save_epoch(epoch: &EpochState, path: &Path) -> Result<(), SaveError> {
     let db = Database::create(path).map_err(redb_err)?;
     let write_txn = db.begin_write().map_err(redb_err)?;
+    write_epoch_tables(&write_txn, epoch)?;
+    write_txn.commit().map_err(redb_err)?;
+    Ok(())
+}
+
+/// Как `save_epoch`, но в ОДНОЙ транзакции с событиями `DeathLog` — нужно
+/// `elements/port`, которому важны и то, и другое вместе (раньше это был
+/// открытый вопрос в этом паспорте: "совместный вызов не протестирован
+/// явно"). Append-only проверка тела и лога — та же, что у `save_all`.
+pub fn save_epoch_and_death(epoch: &EpochState, death_log: &DeathLog, path: &Path) -> Result<(), SaveError> {
+    let db = Database::create(path).map_err(redb_err)?;
+    let write_txn = db.begin_write().map_err(redb_err)?;
+    write_epoch_tables(&write_txn, epoch)?;
     {
-        let mut body_table = write_txn.open_table(BODY_TABLE).map_err(redb_err)?;
-        check_body_prefix(&body_table, &epoch.store)?;
-        let already_persisted = body_table.len().map_err(redb_err)? as u32;
-        for id in already_persisted..epoch.store.len() as TokenId {
-            let (level, children) = epoch.store.get(id);
-            body_table.insert(id, (level, children.to_vec())).map_err(redb_err)?;
-        }
-
-        let mut meta_table = write_txn.open_table(EPOCH_META_TABLE).map_err(redb_err)?;
-        meta_table.insert(0u32, (epoch.revolution, epoch.sequence.ids.clone())).map_err(redb_err)?;
-
-        let mut last_touched_table = write_txn.open_table(LAST_TOUCHED_TABLE).map_err(redb_err)?;
-        for (&token, &revolution) in &epoch.last_touched_revolution {
-            last_touched_table.insert(token, revolution).map_err(redb_err)?;
-        }
-
-        let mut source_tags_table = write_txn.open_table(SOURCE_TAGS_TABLE).map_err(redb_err)?;
-        for (&token, tags) in epoch.source_tags() {
-            let mut sorted: Vec<String> = tags.iter().cloned().collect();
-            sorted.sort_unstable(); // детерминированный порядок на диске, HashSet его не даёт
-            source_tags_table.insert(token, sorted).map_err(redb_err)?;
+        let mut death_table = write_txn.open_table(DEATH_LOG_TABLE).map_err(redb_err)?;
+        check_event_prefix(&death_table, death_log.events())?;
+        let already_persisted_events = death_table.len().map_err(redb_err)? as u32;
+        for (i, &event) in death_log.events().iter().enumerate().skip(already_persisted_events as usize) {
+            death_table.insert(i as u32, encode_event(event)).map_err(redb_err)?;
         }
     }
     write_txn.commit().map_err(redb_err)?;
     Ok(())
 }
 
-/// Восстанавливает полный `EpochState` — Store, `sequence`, `revolution`,
-/// `last_touched_revolution`, теги источника. `max_sequence_len`
-/// (настройка вызывающего кода, не история) не персистится — после
-/// загрузки `None`, как у свежего `EpochState::new()`; вызывающий код
-/// применяет `with_max_sequence_len` заново, если нужно.
-pub fn load_epoch(path: &Path) -> Result<EpochState, LoadError> {
-    let db = Database::open(path).map_err(redb::Error::from)?;
-    let read_txn = db.begin_read().map_err(redb::Error::from)?;
-    let store = load_store(&read_txn)?;
+/// Общая запись тела Store + кэша производного (`EPOCH_META_TABLE`/
+/// `LAST_TOUCHED_TABLE`/`SOURCE_TAGS_TABLE`) в уже открытую транзакцию —
+/// используется и `save_epoch`, и `save_epoch_and_death`.
+fn write_epoch_tables(write_txn: &redb::WriteTransaction, epoch: &EpochState) -> Result<(), SaveError> {
+    let mut body_table = write_txn.open_table(BODY_TABLE).map_err(redb_err)?;
+    check_body_prefix(&body_table, &epoch.store)?;
+    let already_persisted = body_table.len().map_err(redb_err)? as u32;
+    for id in already_persisted..epoch.store.len() as TokenId {
+        let (level, children) = epoch.store.get(id);
+        body_table.insert(id, (level, children.to_vec())).map_err(redb_err)?;
+    }
 
+    let mut meta_table = write_txn.open_table(EPOCH_META_TABLE).map_err(redb_err)?;
+    meta_table.insert(0u32, (epoch.revolution, epoch.sequence.ids.clone())).map_err(redb_err)?;
+
+    let mut last_touched_table = write_txn.open_table(LAST_TOUCHED_TABLE).map_err(redb_err)?;
+    for (&token, &revolution) in &epoch.last_touched_revolution {
+        last_touched_table.insert(token, revolution).map_err(redb_err)?;
+    }
+
+    let mut source_tags_table = write_txn.open_table(SOURCE_TAGS_TABLE).map_err(redb_err)?;
+    for (&token, tags) in epoch.source_tags() {
+        let mut sorted: Vec<String> = tags.iter().cloned().collect();
+        sorted.sort_unstable(); // детерминированный порядок на диске, HashSet его не даёт
+        source_tags_table.insert(token, sorted).map_err(redb_err)?;
+    }
+    Ok(())
+}
+
+/// Общее восстановление `EpochState` из уже открытой транзакции на чтение
+/// — используется и `load_epoch`, и `load_epoch_and_death`.
+fn read_epoch_tables(read_txn: &redb::ReadTransaction, store: Store) -> Result<EpochState, LoadError> {
     let (revolution, sequence_ids) = match read_txn.open_table(EPOCH_META_TABLE) {
         Ok(meta_table) => meta_table.get(0u32).map_err(redb::Error::from)?.map(|g| g.value()).unwrap_or((0, Vec::new())),
         Err(_) => (0, Vec::new()),
@@ -358,6 +377,43 @@ pub fn load_epoch(path: &Path) -> Result<EpochState, LoadError> {
     }
 
     Ok(EpochState::from_parts(store, sequence_ids, revolution, last_touched_revolution, source_tags))
+}
+
+/// Восстанавливает полный `EpochState` — Store, `sequence`, `revolution`,
+/// `last_touched_revolution`, теги источника. `max_sequence_len`
+/// (настройка вызывающего кода, не история) не персистится — после
+/// загрузки `None`, как у свежего `EpochState::new()`; вызывающий код
+/// применяет `with_max_sequence_len` заново, если нужно.
+pub fn load_epoch(path: &Path) -> Result<EpochState, LoadError> {
+    let db = Database::open(path).map_err(redb::Error::from)?;
+    let read_txn = db.begin_read().map_err(redb::Error::from)?;
+    let store = load_store(&read_txn)?;
+    read_epoch_tables(&read_txn, store)
+}
+
+/// Как `load_epoch`, но восстанавливает и `DeathLog` из той же базы (та же
+/// транзакция на чтение). Если таблица лога отсутствует (старая база),
+/// возвращает пустой `DeathLog` — как `load_all`.
+pub fn load_epoch_and_death(path: &Path) -> Result<(EpochState, DeathLog), LoadError> {
+    let db = Database::open(path).map_err(redb::Error::from)?;
+    let read_txn = db.begin_read().map_err(redb::Error::from)?;
+    let store = load_store(&read_txn)?;
+    let epoch = read_epoch_tables(&read_txn, store)?;
+
+    let death_log = match read_txn.open_table(DEATH_LOG_TABLE) {
+        Ok(death_table) => {
+            let mut events = Vec::new();
+            for entry in death_table.iter().map_err(redb::Error::from)? {
+                let (key, value) = entry.map_err(redb::Error::from)?;
+                events.push(decode_event(key.value(), value.value())?);
+            }
+            let focused = DeathLog::replay(&events);
+            DeathLog::from_parts(events, focused)
+        }
+        Err(_) => DeathLog::new(),
+    };
+
+    Ok((epoch, death_log))
 }
 
 /// Восстанавливает Store и DeathLog из redb. Если таблица лога отсутствует
@@ -638,6 +694,26 @@ mod tests {
             assert_eq!(loaded.source_count(id), epoch.source_count(id), "source_count разошёлся для токена {id}");
         }
         assert_eq!(loaded.max_sequence_len(), None, "max_sequence_len — настройка вызывающего кода, не персистится");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn save_epoch_and_death_round_trips_both_together() {
+        let path = tmp_db_path("save_epoch_and_death_round_trip");
+        let mut epoch = EpochState::new();
+        epoch.turn_tagged(b"hello world of axmva, hello again", 2, "corpus:a");
+        let mut death_log = DeathLog::new();
+        death_log.mark(&epoch);
+        death_log.weight_cut(&epoch);
+
+        save_epoch_and_death(&epoch, &death_log, &path).expect("save_epoch_and_death");
+        let (loaded_epoch, loaded_log) = load_epoch_and_death(&path).expect("load_epoch_and_death");
+
+        assert_eq!(loaded_epoch.sequence.ids, epoch.sequence.ids);
+        assert_eq!(loaded_epoch.revolution, epoch.revolution);
+        assert_eq!(loaded_log.focused_set(), death_log.focused_set());
+        assert_eq!(loaded_log.events().len(), death_log.events().len());
 
         let _ = std::fs::remove_file(&path);
     }

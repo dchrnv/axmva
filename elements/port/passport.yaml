@@ -1,0 +1,145 @@
+# Черновик (status: hypothesis), предложен агентом по прямой команде пользователя.
+# Шаг 6 Фазы 3 ROADMAP (сверка с чертежом axmg "с нуля", раздел 5: "Порт").
+# По прямой команде пользователя: полная архитектура (не упрощённая
+# "просто формализовать links_in/gate без mmap-слоя"), плюс "если увидишь
+# возможность качественно улучшить или что-то по безопасности — обязательно
+# вносим".
+#
+# НЕ честный порт /home/assis/axmg/shelf/src/port.rs — реальный референс
+# прочитан целиком, и в нём найдено (не предположено заранее) несколько
+# проблем, каждая сознательно НЕ перенесена:
+# 1. `PortSnapshot::recognize` в axmg — собственный trie greedy-longest-
+#    match, дублирующий StreamingRecognizer другим алгоритмом; на одном
+#    Store они могли бы расходиться. Здесь — прямое делегирование в
+#    StreamingRecognizer (уже протестирован, zero-mutation).
+# 2. `PortSnapshot::open_mmap` в axmg мапит файл `unsafe { Mmap::map }`,
+#    но НИКОГДА не читает мапнутые байты — строит пустой
+#    Store::init_factory() и вызывающий код получает иллюзию загрузки.
+#    Здесь загрузка идёт только через elements/persist::
+#    load_epoch_and_death (уже верифицированный DanglingChild/CorruptLog
+#    путь) — ни одного unsafe-блока в этом элементе.
+# 3. `Moderator` в axmg объявляет min_context_links/max_saturation_ratio,
+#    но moderate() не читает ни одно из двух полей — декоративный конфиг.
+#    CandidateFilter.min_touch_count здесь реально используется
+#    (Store::count_of). Более богатая политика (PPMI-насыщенность) ждёт
+#    Шаг 7 (бюджет роста связей), не продублирована заранее.
+# 4. `Port::receive_and_focus` в axmg пишет Focus в DeathLog напрямую
+#    (death_log.focus(id, revolution) — метод, которого в нашей DeathLog
+#    нет и не будет), минуя достижимость mark()/weight_cut() — второй,
+#    несогласованный путь входа в фокус. Здесь единственный мутирующий
+#    метод (receive) вызывает настоящие epoch.turn_tagged + death.mark +
+#    death.weight_cut, в том порядке, что уже проверен в
+#    tools/death-focus-bench.
+# 5. Имя "Moderator"/"XIV"/"Умеренность" НЕ использовано — в нашем
+#    deck-map карта 14 уже означает перенос hot->cold счётчиков по α
+#    (другая механика, Шаг 8 ROADMAP). Совпадение имён было бы путаницей
+#    в документах проекта, не в коде axmg.
+# 6. provenance_required (I16, уже заявлен в elements/external-input,
+#    никогда не проверялся кодом) теперь реальная проверка: receive()
+#    отвергает пустой/пробельный тег (PortError::EmptySourceTag), не
+#    принимает анонимный вход молча.
+#
+# Протестировано (7/7) и прогнано на реальном файле ДВУМЯ ОТДЕЛЬНЫМИ
+# ПРОЦЕССАМИ (bin/port_demo.rs receive|query) — приём 10 оборотов,
+# отказ пустого тега, сохранение, перезагрузка с нуля, recall/surprise
+# через снимок, продолжение истории (revolution не сбрасывается).
+passport_schema: "0.2"
+kind: code
+status: hypothesis
+version: 0.1.0
+role: "Единственная дверь между ядром (core+epoch+death+surprise+recall) и внешним миром: PortSnapshot — весь read-доступ (recognize/recall/surprise/age/source_count, ограничено фокусом Смерти), Port::receive — единственный мутирующий вход (оборот + mark + weight_cut), Port::save/load — персистентность через elements/persist"
+
+inputs:
+  - {name: byte_chunk, type: bytes, meaning: "порция — тот же вход, что у epoch::turn"}
+  - {name: source_tag, type: "&str", meaning: "тег источника; receive() отвергает пустой/пробельный (PortError::EmptySourceTag) — реальная проверка provenance_required, не декларация"}
+  - {name: threshold, type: u64, meaning: "порог рождения для merge::run, передаётся в epoch.turn_tagged"}
+  - {name: candidate_filter, type: CandidateFilter, meaning: "{min_touch_count: u64} — настройка Port, не персистится (как max_sequence_len у EpochState)"}
+
+outputs:
+  - {name: port_snapshot, type: PortSnapshot, meaning: "read-only view: store(), sequence(), recognize(), recall(), evaluate_surprise(), age(), source_count(), is_focused()"}
+  - {name: port_receive_report, type: PortReceiveReport, meaning: "TurnReport + MarkOutcome + WeightCutOutcome одного вызова receive() — полная видимость, ничего не скрыто"}
+  - {name: recognized_candidates, type: "list<TokenId>", meaning: "recognize() через снимок, отфильтрованный CandidateFilter — read-only запрос, НЕ трогает фокус (в отличие от axmg::receive_and_focus)"}
+
+depends_on:
+  - {id: core, version_range: ">=0.1.0"}
+  - {id: epoch, version_range: ">=0.1.0"}
+  - {id: death, version_range: ">=0.1.0"}
+  - {id: surprise, version_range: ">=0.1.0"}
+  - {id: recall, version_range: ">=0.1.0"}
+  - {id: persist, version_range: ">=0.1.0"}
+must_not_touch: [смысл]
+
+links_in:
+  - from: epoch
+    channel: direct
+    format: "EpochState (turn_tagged, store, sequence, age, source_count)"
+    mode: read_write
+    gate: {accepts: [epoch], rate_limit: "", min_score: {}, provenance_required: false}
+  - from: death
+    channel: direct
+    format: "DeathLog (mark, weight_cut, focused_set, is_focused)"
+    mode: read_write
+    gate: {accepts: [death], rate_limit: "", min_score: {}, provenance_required: false}
+  - from: surprise
+    channel: direct
+    format: "surprise(store, input, threshold) -> SurpriseReport"
+    mode: read
+    gate: {accepts: [surprise], rate_limit: "", min_score: {}, provenance_required: false}
+  - from: recall
+    channel: direct
+    format: "recall(store, sequence, query, focused, config) -> RecallResult"
+    mode: read
+    gate: {accepts: [recall], rate_limit: "", min_score: {}, provenance_required: false}
+  - from: persist
+    channel: direct
+    format: "save_epoch_and_death/load_epoch_and_death"
+    mode: read_write
+    gate: {accepts: [persist], rate_limit: "", min_score: {}, provenance_required: false}
+  - from: external-input
+    channel: direct
+    format: "bytes + тег источника — теперь реально проверяется (не только декларируется), см. header"
+    mode: read
+    gate: {accepts: [external-input], rate_limit: "", min_score: {}, provenance_required: true}
+
+contract:
+  requires:
+    - what: "receive() с пустым или пробельным тегом возвращает Err(EmptySourceTag), не принимает порцию"
+      class: invariant
+      status: hypothesis
+      check: {test: "receive_rejects_empty_or_whitespace_source_tag (unit-тест)", metric: "", threshold: ""}
+    - what: "receive() всегда выполняет turn -> mark -> weight_cut в этом порядке на каждый вызов, без исключений"
+      class: invariant
+      status: hypothesis
+      check: {test: "receive_runs_turn_then_mark_then_weight_cut_every_time (unit-тест)", metric: "", threshold: ""}
+    - what: "PortSnapshot::recognize делегирует в StreamingRecognizer::recognize_focused — не собственный алгоритм распознавания"
+      class: invariant
+      status: hypothesis
+      check: {test: "snapshot_recognize_matches_streaming_recognizer_directly (unit-тест)", metric: "", threshold: "побитовое совпадение Vec<TokenId>"}
+    - what: "CandidateFilter.min_touch_count реально отсекает кандидатов ниже порога; по умолчанию (0) не меняет результат recognize()"
+      class: invariant
+      status: hypothesis
+      check: {test: "candidate_filter_drops_tokens_below_min_touch_count + candidate_filter_default_passes_everything_recognized (unit-тесты)", metric: "", threshold: ""}
+    - what: "recognize_candidates() не мутирует фокус Смерти — read-only запрос, в отличие от axmg::receive_and_focus"
+      class: invariant
+      status: hypothesis
+      check: {test: "структурная гарантия — recognize_candidates принимает &self, не &mut self (не компилируется иначе)", metric: "", threshold: ""}
+    - what: "save/load восстанавливают достаточно, чтобы recall() через снимок находил те же кандидаты, что до сохранения (ранжирование может отличаться — см. elements/persist/passport.yaml, known_losses про count_of)"
+      class: target
+      status: hypothesis
+      check: {test: "save_and_load_round_trip_preserves_everything_needed_for_recall (unit-тест)", metric: "множество token кандидатов до/после", threshold: "совпадает"}
+    - what: "receive() после load() продолжает ту же историю (revolution не сбрасывается в 0)"
+      class: invariant
+      status: hypothesis
+      check: {test: "receive_after_load_continues_the_same_history_not_a_fresh_one (unit-тест)", metric: "revolution после receive — revolution до", threshold: "+1"}
+  bonus: []
+  guarantees: ["Ни одного unsafe-блока в этом элементе — в отличие от axmg::port.rs (unsafe mmap), загрузка снимка идёт только через уже верифицированный elements/persist."]
+  known_losses: ["Богатая политика отсева (по PPMI-насыщенности/разнообразию контекстов, как заявляет, но не делает axmg::Moderator) не реализована — ждёт Шаг 7 ROADMAP (бюджет роста PPMI-связей). CandidateFilter сейчас — один простой, но настоящий критерий (min_touch_count), не притворяется богаче, чем есть.", "clock/axtime (stamp/age_inner/period) сознательно НЕ входят в Port v1 — см. open_questions: Шаг 3 ROADMAP предполагал, что это дёшево пересчитывается из sequence, но GrowthSeries/TouchLog нужен весь ряд приростов по оборотам, которого в кэше persist нет; это поправка к drafts/axmv2-truth-vs-derived.md, не решённая здесь."]
+
+cost: {ram: "O(Store) + O(DeathLog) — Port просто владеет обоими, ничего не дублирует", time: "receive() — O(turn) + O(mark) + O(weight_cut), та же стоимость, что отдельные вызовы (см. epoch/death passports); не измерено отдельно на масштабе за пределами 10 оборотов (bin/port_demo.rs)"}
+droppable: {value: true, why: "epoch/death/surprise/recall/persist все работают и без Port — это удобный фасад с реальными гарантиями (нет unsafe, нет обхода generational-GC), не новая независимая функциональность"}
+sources: ["/home/assis/axmg/shelf/src/port.rs", "../../drafts/axmv2-deck-map.md", "../../drafts/axmv2-truth-vs-derived.md"]
+open_questions:
+  - "Clock/axtime (вид 3 времени, age_inner) не включены в Port v1 — см. known_losses. Если понадобятся через единственную дверь, нужно либо персистить полный ряд GrowthSeries (не только финальный sequence), либо принять, что age_inner после перезапуска процесса просто недоступен до следующего живого прогона."
+  - "Rate_limit/min_score из gate (I16) не реализованы — нет ни одного сценария в проекте, где эти понятия были бы определены предметно (что такое 'score' источника?), не изобретено заранее без повода, по аналогии с тем, как axaxes не стал натягивать плохую пару мер."
+  - "Многопроцессный доступ к одному Port (параллельный receive из двух процессов) не рассматривался — та же граница, что уже отмечена в elements/persist."
+note: ""

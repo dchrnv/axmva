@@ -12,10 +12,16 @@
 # транспорт (файл из `input/`), использует тег по имени файла. Контракт
 # этого элемента (porция несёт provenance-тег) теперь исполним, не только
 # описан.
+#
+# РЕШЕНО 2026-10-31 (Фаза 3 ROADMAP, Шаг 6): контракт "каждая порция несёт
+# непустой provenance-тег" теперь реально ПРОВЕРЯЕТСЯ кодом, не только
+# декларируется — elements/port::Port::receive() отвергает пустой/
+# пробельный тег (PortError::EmptySourceTag). До этого шага ничто в коде
+# не отказывало анонимному входу, несмотря на заявленный здесь контракт.
 passport_schema: "0.2"
 kind: external
 status: hypothesis
-version: 0.2.0
+version: 0.3.0
 role: "Вход модели: корпус или поток диалога режется на порции с тегом источника (ingest_bytes_tagged), прежде чем попасть в ядро — passport-прокси, содержимое не хешируется. Один контракт, несколько возможных транспортов (см. note)."
 
 inputs: []
@@ -31,7 +37,7 @@ contract:
     - what: "Каждая порция несёт тег источника (provenance), назначаемый транспортом, а не содержимым сообщения"
       class: invariant
       status: hypothesis
-      check: {test: "у каждой выданной порции есть непустой provenance-тег", metric: "доля порций без тега", threshold: "0"}
+      check: {test: "elements/port::receive_rejects_empty_or_whitespace_source_tag (unit-тест в elements/port)", metric: "доля порций без тега, прошедших через Port::receive", threshold: "0 — отвергаются до записи, не после"}
   bonus: []
   guarantees: []
   known_losses: []

@@ -41,7 +41,7 @@
 passport_schema: "0.2"
 kind: code
 status: hypothesis
-version: 0.4.0
+version: 0.5.0
 role: "Персистентность на redb: тело Store (append-only, инкрементальная дозапись), лог Focus/Unfocus из elements/death, и (save_epoch/load_epoch) явный кэш производного состояния elements/epoch — всё в ACID-транзакциях"
 
 inputs:
@@ -54,6 +54,7 @@ outputs:
   - {name: restored_store, type: Store, meaning: "полка, восстановленная проходом по логу — hash_index/children_arena отстроены заново через intern(), не скопированы напрямую"}
   - {name: restored_death_log, type: DeathLog, meaning: "лог фокуса, восстановленный из таблицы событий; пустой DeathLog, если таблицы нет (старая база)"}
   - {name: restored_epoch, type: EpochState, meaning: "полное состояние Колеса через load_epoch: store+sequence+revolution+last_touched_revolution+source_tags восстановлены; max_sequence_len — настройка вызывающего кода, НЕ персистится, после загрузки всегда None"}
+  - {name: "restored_epoch_and_death", type: "(EpochState, DeathLog)", meaning: "load_epoch_and_death — то же, что restored_epoch, плюс DeathLog в той же транзакции; нужен elements/port"}
 
 depends_on:
   - {id: core, version_range: ">=0.1.0"}
@@ -137,5 +138,5 @@ open_questions:
   - "Многопроцессный/многопоточный доступ к одному redb-файлу не проверен — bin/persist_demo.rs запускает save и load строго по очереди, не параллельно."
   - "РЕШЕНО 2026-10-31 (уточнено): счётчики не персистятся — но это влияет ТОЛЬКО на recall() (ранжирование, не набор кандидатов), не на age()/source_count() (персистятся через save_epoch теперь) и не на surprise() (не зависит от count_of вовсе). Старое, более widely-worried формулирование этого open_question снято как неточное."
   - "Raw-поток входных порций (истина по drafts/axmv2-truth-vs-derived.md: revolution+тег+байты, не только их итог) этим шагом НЕ персистится — save_epoch кэширует производное (sequence/last_touched/теги), не саму истину. Полная пересборка с нуля при потере/повреждении этого файла пока не из чего сделать. Остаётся открытым (не входило в скоуп Шага 5, который решал кэш, не поток-истину)."
-  - "save_epoch не персистит DEATH_LOG_TABLE (в отличие от save_all) — вызывающему коду, которому нужны и epoch-состояние, и DeathLog одновременно, придётся вызывать обе функции на один путь (должно работать, т.к. это разные таблицы в одной БД, но совместный вызов не протестирован явно)."
+  - "РЕШЕНО 2026-10-31 (Фаза 3 ROADMAP, Шаг 6): добавлены save_epoch_and_death/load_epoch_and_death — одна транзакция на тело+epoch-кэш+DeathLog вместе, нужны elements/port. save_epoch/load_epoch (без DeathLog) остаются отдельно для случаев, где DeathLog не нужен."
 note: ""
