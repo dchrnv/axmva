@@ -7,7 +7,9 @@ pub fn median(values: &[f64]) -> f64 {
         return 0.0;
     }
     let mut v = values.to_vec();
-    v.sort_by(|a, b| a.partial_cmp(b).expect("NaN in measure values"));
+    // `total_cmp` gives a total order even over NaN/±0.0/infinities — no
+    // panic on malformed measure data, unlike `partial_cmp`.
+    v.sort_by(|a, b| a.total_cmp(b));
     let n = v.len();
     if n % 2 == 1 {
         v[n / 2]

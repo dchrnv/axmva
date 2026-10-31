@@ -38,6 +38,8 @@ pub enum LoadError {
     /// Запись уровня >=1 ссылается на ребёнка, который ещё не появился в
     /// логе к этому моменту — композит построен из будущего.
     DanglingChild { record_id: TokenId, child: TokenId },
+    /// Байт типа записи лога фокуса — не 0 (Focus) и не 1 (Unfocus).
+    CorruptEventKind { index: u32, kind: u8 },
 }
 
 impl fmt::Display for LoadError {
@@ -49,6 +51,9 @@ impl fmt::Display for LoadError {
             }
             LoadError::DanglingChild { record_id, child } => {
                 write!(f, "лог повреждён: запись #{record_id} ссылается на несуществующего ребёнка {child}")
+            }
+            LoadError::CorruptEventKind { index, kind } => {
+                write!(f, "лог повреждён: запись #{index} лога фокуса имеет неизвестный тип {kind} (ожидался 0 или 1)")
             }
         }
     }
@@ -130,12 +135,12 @@ fn encode_event(event: FocusEvent) -> (u8, u32, u32) {
     }
 }
 
-fn decode_event(raw: (u8, u32, u32)) -> FocusEvent {
+fn decode_event(index: u32, raw: (u8, u32, u32)) -> Result<FocusEvent, LoadError> {
     let (kind, token, revolution) = raw;
     match kind {
-        0 => FocusEvent::Focus { token, revolution },
-        1 => FocusEvent::Unfocus { token, revolution },
-        other => panic!("неизвестный тип записи лога фокуса: {other} (повреждённый файл?)"),
+        0 => Ok(FocusEvent::Focus { token, revolution }),
+        1 => Ok(FocusEvent::Unfocus { token, revolution }),
+        other => Err(LoadError::CorruptEventKind { index, kind: other }),
     }
 }
 
@@ -285,8 +290,8 @@ pub fn load_all(path: &Path) -> Result<(Store, DeathLog), LoadError> {
         Ok(death_table) => {
             let mut events = Vec::new();
             for entry in death_table.iter().map_err(redb::Error::from)? {
-                let (_key, value) = entry.map_err(redb::Error::from)?;
-                events.push(decode_event(value.value()));
+                let (key, value) = entry.map_err(redb::Error::from)?;
+                events.push(decode_event(key.value(), value.value())?);
             }
             let focused = DeathLog::replay(&events);
             DeathLog::from_parts(events, focused)
@@ -497,6 +502,39 @@ mod tests {
         assert_eq!(loaded_store.len(), epoch.store.len());
         assert_eq!(loaded_log.events().len(), death_log.events().len());
         assert_eq!(loaded_log.focused_set(), death_log.focused_set());
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn load_all_rejects_corrupt_event_kind_byte_instead_of_panicking() {
+        let path = tmp_db_path("corrupt_event_kind");
+        let mut epoch = EpochState::new();
+        epoch.turn(b"hello world", 2);
+        let mut death_log = DeathLog::new();
+        death_log.mark(&epoch);
+        save_all(&epoch.store, &death_log, &path).expect("save_all");
+
+        // Портим один байт типа записи лога фокуса прямо через redb — ни
+        // 0 (Focus), ни 1 (Unfocus).
+        {
+            let db = Database::create(&path).expect("open for corruption");
+            let write_txn = db.begin_write().expect("begin_write");
+            {
+                let mut table = write_txn.open_table(DEATH_LOG_TABLE).expect("open death log table");
+                let first_key = table.iter().expect("iter").next().expect("хотя бы одна запись").expect("entry").0.value();
+                let (_, token, revolution) = table.get(first_key).expect("get").expect("value").value();
+                table.insert(first_key, (99u8, token, revolution)).expect("insert corrupted");
+            }
+            write_txn.commit().expect("commit corruption");
+        }
+
+        let result = load_all(&path);
+        match result {
+            Err(LoadError::CorruptEventKind { kind: 99, .. }) => {}
+            Err(other) => panic!("ожидали CorruptEventKind{{kind: 99}}, получили {other}"),
+            Ok(_) => panic!("повреждённый байт типа записи обязан вернуть Err, не Ok"),
+        }
 
         let _ = std::fs::remove_file(&path);
     }

@@ -13,10 +13,16 @@
 # (тела токенов и события лога, не только длину) перед дозаписью и
 # возвращают SaveError, если он не совпадает с переданными Store/DeathLog.
 # Сигнатуры изменились: Result<(), redb::Error> -> Result<(), SaveError>.
+#
+# ИСПРАВЛЕНО 2026-10-31 (Фаза 3 ROADMAP, Шаг 1 — сверка с чертежом axmg
+# "с нуля", инвариант 5: "без паник, всё через Result"): decode_event()
+# паниковал на неизвестный байт типа записи лога (повреждённый файл) —
+# теперь возвращает LoadError::CorruptEventKind, новый тест
+# load_all_rejects_corrupt_event_kind_byte_instead_of_panicking. 8/8 -> 9/9.
 passport_schema: "0.2"
 kind: code
 status: hypothesis
-version: 0.2.0
+version: 0.3.0
 role: "Персистентность на redb: тело Store (append-only, инкрементальная дозапись) и лог Focus/Unfocus из elements/death в одной ACID-транзакции"
 
 inputs:
@@ -71,6 +77,10 @@ contract:
       class: invariant
       status: hypothesis
       check: {test: "save_rejects_unrelated_shorter_store_instead_of_silently_doing_nothing + save_rejects_body_mismatch_on_diverging_history + save_all_rejects_event_mismatch (unit-тесты) + воспроизведён и исправлен реальный сценарий через bin/persist_demo.rs", metric: "", threshold: "Err, не Ok(()) при расхождении"}
+    - what: "Неизвестный байт типа записи лога фокуса (повреждённый файл) даёт Err при загрузке, не панику процесса"
+      class: invariant
+      status: hypothesis
+      check: {test: "load_all_rejects_corrupt_event_kind_byte_instead_of_panicking (unit-тест)", metric: "", threshold: "Err(LoadError::CorruptEventKind), не panic"}
   bonus: []
   guarantees: []
   known_losses: ["счётчики (counts) не персистятся — после перезапуска age/surprise, завязанные на счётчик, видят его с нуля, не историю встреч"]

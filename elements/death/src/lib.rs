@@ -211,7 +211,10 @@ impl DeathLog {
         // Возрастание по весу; при равном весе одноконтекстные (меньшее
         // разнообразие) раньше; TokenId последним членом — детерминизм.
         scored.sort_by(|a, b| {
-            a.1.partial_cmp(&b.1).unwrap().then_with(|| a.2.cmp(&b.2)).then_with(|| a.0.cmp(&b.0))
+            // `total_cmp` — полный порядок без паники даже на NaN (PPMI
+            // всегда >= 0 по построению, но сортировка не должна зависеть
+            // от этого внешнего инварианта, чтобы не падать).
+            a.1.total_cmp(&b.1).then_with(|| a.2.cmp(&b.2)).then_with(|| a.0.cmp(&b.0))
         });
 
         let cut_count = ((scored.len() as f64) * WEIGHT_CUT_QUANTILE).round() as usize;

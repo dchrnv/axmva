@@ -54,16 +54,16 @@ impl CooAccumulator {
             total_weight += weight;
         }
 
-        let mut row_index: Vec<TokenId> = by_row.keys().copied().collect();
-        row_index.sort_unstable();
+        let mut rows: Vec<(TokenId, Vec<(TokenId, u64)>)> = by_row.into_iter().collect();
+        rows.sort_unstable_by_key(|&(row, _)| row);
+        let row_index: Vec<TokenId> = rows.iter().map(|&(row, _)| row).collect();
 
         let mut row_ptr: Vec<u32> = Vec::with_capacity(row_index.len() + 1);
         let mut col_idx: Vec<TokenId> = Vec::new();
         let mut values: Vec<u64> = Vec::new();
 
         row_ptr.push(0);
-        for &row in &row_index {
-            let mut entries = by_row.remove(&row).expect("row_index построен из ключей by_row");
+        for (_, mut entries) in rows {
             entries.sort_unstable_by_key(|&(ctx, _)| ctx);
             for (ctx, w) in entries {
                 col_idx.push(ctx);
