@@ -13,4 +13,12 @@ edition = "2024"
 axmva-core = { path = "../core" }
 axmva-death = { path = "../death" }
 axmva-epoch = { path = "../epoch" }
+# Нужен и bin/persist_demo.rs (режим load-epoch — recall() сразу после
+# перезагрузки), не только тестам.
+axmva-recall = { path = "../recall" }
 redb = "4.1.0"
+
+[dev-dependencies]
+# Только для приёмочного теста из чертежа axmg (раздел 8): перезагрузка
+# с диска даёт тот же recall()/check_surprise, что и до сохранения.
+axmva-surprise = { path = "../surprise" }

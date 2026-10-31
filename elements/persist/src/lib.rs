@@ -22,12 +22,25 @@
 
 use axmva_core::{Store, TokenId};
 use axmva_death::{DeathLog, FocusEvent};
+use axmva_epoch::EpochState;
 use redb::{Database, ReadableDatabase, ReadableTable, ReadableTableMetadata, TableDefinition};
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::Path;
 
 const BODY_TABLE: TableDefinition<u32, (u32, Vec<u32>)> = TableDefinition::new("body");
 const DEATH_LOG_TABLE: TableDefinition<u32, (u8, u32, u32)> = TableDefinition::new("death_log");
+/// Единственная строка (ключ всегда 0): (revolution, sequence.ids) — явный
+/// кэш производного, которое дорого пересобирать (см.
+/// drafts/axmv2-truth-vs-derived.md — пересборка epoch.turn() квадратична
+/// по замеру tools/epoch-cost-bench, не бесплатна).
+const EPOCH_META_TABLE: TableDefinition<u32, (u32, Vec<u32>)> = TableDefinition::new("epoch_meta");
+/// token -> last_touched_revolution. Снимок, не лог: перезаписывается
+/// целиком на каждый save_epoch (малая, растёт как O(число разных
+/// тронутых токенов), не как O(событий)).
+const LAST_TOUCHED_TABLE: TableDefinition<u32, u32> = TableDefinition::new("last_touched");
+/// token -> список тегов источника (как множество, порядок не важен).
+const SOURCE_TAGS_TABLE: TableDefinition<u32, Vec<String>> = TableDefinition::new("source_tags");
 
 #[derive(Debug)]
 pub enum LoadError {
@@ -207,11 +220,12 @@ fn check_event_prefix(table: &redb::Table<u32, (u8, u32, u32)>, events: &[FocusE
     Ok(())
 }
 
-/// Восстановить Store проходом по логу, заново вызывая `intern()` в
-/// порядке рождения. Счётчики после загрузки — нулевые у всех токенов.
-pub fn load(path: &Path) -> Result<Store, LoadError> {
-    let db = Database::open(path).map_err(redb::Error::from)?;
-    let read_txn = db.begin_read().map_err(redb::Error::from)?;
+/// Общая реализация: восстановить Store проходом по `BODY_TABLE`, заново
+/// вызывая `intern()` в порядке рождения. Счётчики после загрузки —
+/// нулевые у всех токенов. Используется всеми тремя загрузчиками
+/// (`load`, `load_all`, `load_epoch`), чтобы не тройнить одну и ту же
+/// проверку.
+fn load_store(read_txn: &redb::ReadTransaction) -> Result<Store, LoadError> {
     let table = read_txn.open_table(BODY_TABLE).map_err(redb::Error::from)?;
 
     let mut store = Store::new();
@@ -232,6 +246,14 @@ pub fn load(path: &Path) -> Result<Store, LoadError> {
         }
     }
     Ok(store)
+}
+
+/// Восстановить Store проходом по логу, заново вызывая `intern()` в
+/// порядке рождения. Счётчики после загрузки — нулевые у всех токенов.
+pub fn load(path: &Path) -> Result<Store, LoadError> {
+    let db = Database::open(path).map_err(redb::Error::from)?;
+    let read_txn = db.begin_read().map_err(redb::Error::from)?;
+    load_store(&read_txn)
 }
 
 /// Атомарно сохраняет тело Store и события DeathLog в единой транзакции.
@@ -261,30 +283,89 @@ pub fn save_all(store: &Store, death_log: &DeathLog, path: &Path) -> Result<(), 
     Ok(())
 }
 
+/// Сохраняет тело Store (append-only, как и `save`) ПЛЮС явный кэш
+/// производного, которое дорого пересобирать: `revolution`,
+/// `sequence.ids`, `last_touched_revolution`, тег источника на токен.
+/// Без этого `recall()`/`age()`/`source_count()` после перезапуска
+/// процесса не имели бы данных — `sequence` в памяти ни во что другое не
+/// восстановима (см. drafts/axmv2-truth-vs-derived.md).
+///
+/// В отличие от `save`/`save_all`, таблицы `EPOCH_META_TABLE`/
+/// `LAST_TOUCHED_TABLE`/`SOURCE_TAGS_TABLE` — не append-only лог, а
+/// снимок: перезаписываются целиком при каждом вызове (малые, растут как
+/// O(число разных тронутых токенов), не как O(событий) — инкрементальная
+/// дозапись здесь не нужна).
+pub fn save_epoch(epoch: &EpochState, path: &Path) -> Result<(), SaveError> {
+    let db = Database::create(path).map_err(redb_err)?;
+    let write_txn = db.begin_write().map_err(redb_err)?;
+    {
+        let mut body_table = write_txn.open_table(BODY_TABLE).map_err(redb_err)?;
+        check_body_prefix(&body_table, &epoch.store)?;
+        let already_persisted = body_table.len().map_err(redb_err)? as u32;
+        for id in already_persisted..epoch.store.len() as TokenId {
+            let (level, children) = epoch.store.get(id);
+            body_table.insert(id, (level, children.to_vec())).map_err(redb_err)?;
+        }
+
+        let mut meta_table = write_txn.open_table(EPOCH_META_TABLE).map_err(redb_err)?;
+        meta_table.insert(0u32, (epoch.revolution, epoch.sequence.ids.clone())).map_err(redb_err)?;
+
+        let mut last_touched_table = write_txn.open_table(LAST_TOUCHED_TABLE).map_err(redb_err)?;
+        for (&token, &revolution) in &epoch.last_touched_revolution {
+            last_touched_table.insert(token, revolution).map_err(redb_err)?;
+        }
+
+        let mut source_tags_table = write_txn.open_table(SOURCE_TAGS_TABLE).map_err(redb_err)?;
+        for (&token, tags) in epoch.source_tags() {
+            let mut sorted: Vec<String> = tags.iter().cloned().collect();
+            sorted.sort_unstable(); // детерминированный порядок на диске, HashSet его не даёт
+            source_tags_table.insert(token, sorted).map_err(redb_err)?;
+        }
+    }
+    write_txn.commit().map_err(redb_err)?;
+    Ok(())
+}
+
+/// Восстанавливает полный `EpochState` — Store, `sequence`, `revolution`,
+/// `last_touched_revolution`, теги источника. `max_sequence_len`
+/// (настройка вызывающего кода, не история) не персистится — после
+/// загрузки `None`, как у свежего `EpochState::new()`; вызывающий код
+/// применяет `with_max_sequence_len` заново, если нужно.
+pub fn load_epoch(path: &Path) -> Result<EpochState, LoadError> {
+    let db = Database::open(path).map_err(redb::Error::from)?;
+    let read_txn = db.begin_read().map_err(redb::Error::from)?;
+    let store = load_store(&read_txn)?;
+
+    let (revolution, sequence_ids) = match read_txn.open_table(EPOCH_META_TABLE) {
+        Ok(meta_table) => meta_table.get(0u32).map_err(redb::Error::from)?.map(|g| g.value()).unwrap_or((0, Vec::new())),
+        Err(_) => (0, Vec::new()),
+    };
+
+    let mut last_touched_revolution = HashMap::new();
+    if let Ok(last_touched_table) = read_txn.open_table(LAST_TOUCHED_TABLE) {
+        for entry in last_touched_table.iter().map_err(redb::Error::from)? {
+            let (key, value) = entry.map_err(redb::Error::from)?;
+            last_touched_revolution.insert(key.value(), value.value());
+        }
+    }
+
+    let mut source_tags: HashMap<TokenId, HashSet<String>> = HashMap::new();
+    if let Ok(source_tags_table) = read_txn.open_table(SOURCE_TAGS_TABLE) {
+        for entry in source_tags_table.iter().map_err(redb::Error::from)? {
+            let (key, value) = entry.map_err(redb::Error::from)?;
+            source_tags.insert(key.value(), value.value().into_iter().collect());
+        }
+    }
+
+    Ok(EpochState::from_parts(store, sequence_ids, revolution, last_touched_revolution, source_tags))
+}
+
 /// Восстанавливает Store и DeathLog из redb. Если таблица лога отсутствует
 /// (старая база), возвращает пустой DeathLog.
 pub fn load_all(path: &Path) -> Result<(Store, DeathLog), LoadError> {
     let db = Database::open(path).map_err(redb::Error::from)?;
     let read_txn = db.begin_read().map_err(redb::Error::from)?;
-
-    let body_table = read_txn.open_table(BODY_TABLE).map_err(redb::Error::from)?;
-    let mut store = Store::new();
-    for entry in body_table.iter().map_err(redb::Error::from)? {
-        let (key, value) = entry.map_err(redb::Error::from)?;
-        let id = key.value();
-        let (level, children) = value.value();
-
-        if level >= 1 {
-            if let Some(&bad_child) = children.iter().find(|&&c| c >= store.len() as TokenId) {
-                return Err(LoadError::DanglingChild { record_id: id, child: bad_child });
-            }
-        }
-
-        let replayed = store.intern(level, &children);
-        if replayed != id {
-            return Err(LoadError::CorruptLog { expected_id: id, replayed_id: replayed });
-        }
-    }
+    let store = load_store(&read_txn)?;
 
     let death_log = match read_txn.open_table(DEATH_LOG_TABLE) {
         Ok(death_table) => {
@@ -535,6 +616,86 @@ mod tests {
             Err(other) => panic!("ожидали CorruptEventKind{{kind: 99}}, получили {other}"),
             Ok(_) => panic!("повреждённый байт типа записи обязан вернуть Err, не Ok"),
         }
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn save_epoch_and_load_epoch_round_trip_everything() {
+        let path = tmp_db_path("save_epoch_round_trip");
+        let mut epoch = EpochState::new();
+        epoch.turn_tagged(b"hello world of axmva", 2, "corpus:a");
+        epoch.turn_tagged(b"hello again", 2, "corpus:b");
+
+        save_epoch(&epoch, &path).expect("save_epoch");
+        let loaded = load_epoch(&path).expect("load_epoch");
+
+        assert_eq!(loaded.store.len(), epoch.store.len());
+        assert_eq!(loaded.revolution, epoch.revolution);
+        assert_eq!(loaded.sequence.ids, epoch.sequence.ids);
+        assert_eq!(loaded.last_touched_revolution, epoch.last_touched_revolution);
+        for &id in &epoch.sequence.ids {
+            assert_eq!(loaded.source_count(id), epoch.source_count(id), "source_count разошёлся для токена {id}");
+        }
+        assert_eq!(loaded.max_sequence_len(), None, "max_sequence_len — настройка вызывающего кода, не персистится");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn save_epoch_rejects_unrelated_shorter_store_like_save_does() {
+        let path = tmp_db_path("save_epoch_rejects_shorter");
+        let mut epoch_a = EpochState::new();
+        epoch_a.turn(b"a long enough piece of real text here", 2);
+        save_epoch(&epoch_a, &path).expect("первое сохранение");
+
+        let mut epoch_b = EpochState::new();
+        epoch_b.turn(b"zz", 2); // гораздо короче -> несвязанная история
+
+        let result = save_epoch(&epoch_b, &path);
+        assert!(result.is_err(), "несвязанный короче store обязан вернуть Err, не тихо сохраниться");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn reload_preserves_surprise_verdict_exactly_but_recall_scores_only_approximately() {
+        // Приёмочный критерий прямо из чертежа axmg (раздел 8): "Перезагрузка
+        // с диска даёт тот же recall и тот же вердикт check_surprise
+        // (проверяет пункт 7.1)". До этого шага было физически невозможно —
+        // sequence не персистилась вовсе.
+        //
+        // НАЙДЕНО этим тестом (не придумано заранее): после перезагрузки
+        // recall() находит ТЕ ЖЕ кандидаты, но с другим score/порядком —
+        // причина documented тут же, в load(): "счётчики после загрузки —
+        // нулевые у всех токенов" (намеренное решение persist, counts это
+        // restorable view, не история). Формула score в recall_from_csr
+        // использует store.count_of(token) как множитель веса — после
+        // сброса счётчиков в 0 эта часть веса у всех токенов становится
+        // одинаковой (log2(1)=0), что меняет ранжирование. s_static/
+        // s_growth (surprise) НЕ зависят от count_of вовсе — там
+        // вердикт точно не меняется. См. passport.yaml этого элемента.
+        let path = tmp_db_path("reload_recall_surprise_parity");
+        let mut epoch = EpochState::new();
+        let corpus = b"the cat sat on the mat. the dog sat on the rug. the cat chased the dog. the dog barked at the cat.";
+        epoch.turn_tagged(corpus, 2, "corpus:cats-and-dogs");
+
+        let recall_config = axmva_recall::RecallConfig::default();
+        let recall_before = axmva_recall::recall(&epoch.store, &epoch.sequence.ids, b"cat", None, &recall_config);
+        let surprise_before = axmva_surprise::surprise(&epoch.store, b"the cat sat", 2);
+
+        save_epoch(&epoch, &path).expect("save_epoch");
+        let loaded = load_epoch(&path).expect("load_epoch");
+
+        let recall_after = axmva_recall::recall(&loaded.store, &loaded.sequence.ids, b"cat", None, &recall_config);
+        let surprise_after = axmva_surprise::surprise(&loaded.store, b"the cat sat", 2);
+
+        assert_eq!(recall_before.query_tokens, recall_after.query_tokens);
+        let tokens_before: HashSet<TokenId> = recall_before.candidates.iter().map(|c| c.token).collect();
+        let tokens_after: HashSet<TokenId> = recall_after.candidates.iter().map(|c| c.token).collect();
+        assert_eq!(tokens_before, tokens_after, "recall() обязан находить ТЕ ЖЕ кандидаты после перезагрузки, даже если их score изменился");
+
+        assert_eq!(surprise_before, surprise_after, "surprise() обязан дать тот же вердикт после перезагрузки — не зависит от count_of");
 
         let _ = std::fs::remove_file(&path);
     }

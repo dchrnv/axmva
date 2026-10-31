@@ -47,6 +47,46 @@ fn main() {
                 println!("Повторный intern байта 'a' после загрузки -> id {probe} (должен быть < 256, фабричный)");
             }
         }
-        other => panic!("неизвестный режим {other:?}, используй save|load"),
+        "save-epoch" => {
+            let file = env::args()
+                .nth(2)
+                .unwrap_or_else(|| "input/text/three_kingdoms_zh.txt".to_string());
+            let bytes = fs::read(&file).unwrap_or_else(|e| panic!("не удалось прочитать {file}: {e}"));
+            let tag = Path::new(&file).file_name().and_then(|n| n.to_str()).unwrap_or("input").to_string();
+
+            println!("=== persist: save-epoch (sequence/revolution/last_touched/теги, не только тела) ===");
+            let mut epoch = EpochState::new();
+            epoch.run_corpus_tagged(&bytes, BIRTH_THRESHOLD, &tag);
+            println!(
+                "Полка: {} | revolution: {} | длина sequence: {}",
+                epoch.store.len(),
+                epoch.revolution,
+                epoch.sequence.ids.len()
+            );
+            axmva_persist::save_epoch(&epoch, Path::new("/tmp/axmva_persist_epoch_demo.redb")).expect("save_epoch");
+            println!("Сохранено в /tmp/axmva_persist_epoch_demo.redb");
+        }
+        "load-epoch" => {
+            println!("=== persist: load-epoch (отдельный процесс, своя память с нуля) ===");
+            let loaded =
+                axmva_persist::load_epoch(Path::new("/tmp/axmva_persist_epoch_demo.redb")).expect("load_epoch");
+            println!(
+                "Полка: {} | revolution: {} | длина sequence: {}",
+                loaded.store.len(),
+                loaded.revolution,
+                loaded.sequence.ids.len()
+            );
+
+            // recall() сразу после перезагрузки — работает, потому что
+            // sequence теперь реально персистится (см.
+            // drafts/axmv2-truth-vs-derived.md). Напоминание: score может
+            // отличаться от того, что было до сохранения (счётчики не
+            // персистятся намеренно, см. passport.yaml этого элемента),
+            // но НАЙДЕННЫЕ кандидаты — те же.
+            let config = axmva_recall::RecallConfig::default();
+            let result = axmva_recall::recall(&loaded.store, &loaded.sequence.ids, b"the", None, &config);
+            println!("recall('the') после перезагрузки: {:?}", result.to_context_string());
+        }
+        other => panic!("неизвестный режим {other:?}, используй save|load|save-epoch|load-epoch"),
     }
 }

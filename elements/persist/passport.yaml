@@ -19,24 +19,47 @@
 # паниковал на неизвестный байт типа записи лога (повреждённый файл) —
 # теперь возвращает LoadError::CorruptEventKind, новый тест
 # load_all_rejects_corrupt_event_kind_byte_instead_of_panicking. 8/8 -> 9/9.
+#
+# ДОБАВЛЕНО 2026-10-31 (Фаза 3 ROADMAP, Шаг 5 — сверка с чертежом axmg,
+# персист сохраняет достаточно для честного restart): новые save_epoch/
+# load_epoch — помимо тела Store, явно кэшируют revolution/sequence.ids/
+# last_touched_revolution/теги источника (elements/epoch). Без этого
+# recall()/age()/source_count() после перезапуска процесса не имели бы
+# данных вовсе — sequence ни во что другое не восстанавливается (см.
+# drafts/axmv2-truth-vs-derived.md). save/save_all/load/load_all не
+# изменились — save_epoch/load_epoch отдельная, более полная пара функций,
+# не замена.
+#
+# НАЙДЕНО при написании приёмочного теста из чертежа (раздел 8, "перезагрузка
+# даёт тот же recall"), не придумано заранее: recall() НЕ полностью
+# reload-invariant — находит ТЕ ЖЕ кандидаты, но с другим score/порядком,
+# потому что recall_from_csr's формула веса использует store.count_of(token),
+# а счётчики после load() намеренно нулевые (решение этого элемента, см.
+# ниже). surprise() (s_static/s_growth) НЕ зависит от count_of вовсе —
+# там вердикт после перезагрузки совпадает точно. Не исправлено тихо —
+# задокументировано тестом и open_question.
 passport_schema: "0.2"
 kind: code
 status: hypothesis
-version: 0.3.0
-role: "Персистентность на redb: тело Store (append-only, инкрементальная дозапись) и лог Focus/Unfocus из elements/death в одной ACID-транзакции"
+version: 0.4.0
+role: "Персистентность на redb: тело Store (append-only, инкрементальная дозапись), лог Focus/Unfocus из elements/death, и (save_epoch/load_epoch) явный кэш производного состояния elements/epoch — всё в ACID-транзакциях"
 
 inputs:
   - {name: store, type: "&Store", meaning: "полка (источник: elements/core)"}
   - {name: death_log, type: "&DeathLog", meaning: "лог фокуса (источник: elements/death), опционально — save/load работают и без него"}
+  - {name: epoch, type: "&EpochState", meaning: "полное состояние Колеса (источник: elements/epoch) — для save_epoch/load_epoch, помимо Store также sequence/revolution/last_touched_revolution/source_tags"}
 
 outputs:
-  - {name: saved_file, type: "redb database", meaning: "файл на диске с телами токенов (BODY_TABLE) и событиями фокуса (DEATH_LOG_TABLE)"}
+  - {name: saved_file, type: "redb database", meaning: "файл на диске: BODY_TABLE (всегда) + DEATH_LOG_TABLE (save_all) + EPOCH_META_TABLE/LAST_TOUCHED_TABLE/SOURCE_TAGS_TABLE (save_epoch)"}
   - {name: restored_store, type: Store, meaning: "полка, восстановленная проходом по логу — hash_index/children_arena отстроены заново через intern(), не скопированы напрямую"}
   - {name: restored_death_log, type: DeathLog, meaning: "лог фокуса, восстановленный из таблицы событий; пустой DeathLog, если таблицы нет (старая база)"}
+  - {name: restored_epoch, type: EpochState, meaning: "полное состояние Колеса через load_epoch: store+sequence+revolution+last_touched_revolution+source_tags восстановлены; max_sequence_len — настройка вызывающего кода, НЕ персистится, после загрузки всегда None"}
 
 depends_on:
   - {id: core, version_range: ">=0.1.0"}
   - {id: death, version_range: ">=0.1.0"}
+  - {id: epoch, version_range: ">=0.1.0"}
+  - {id: recall, version_range: ">=0.1.0"}   # только bin/persist_demo.rs (режим load-epoch), не сама библиотека
 must_not_touch: [смысл]
 
 links_in:
@@ -50,6 +73,11 @@ links_in:
     format: "DeathLog (events, focused_set, replay, from_parts)"
     mode: read
     gate: {accepts: [death], rate_limit: "", min_score: {}, provenance_required: false}
+  - from: epoch
+    channel: direct
+    format: "EpochState (store, sequence, revolution, last_touched_revolution, source_tags, from_parts)"
+    mode: read
+    gate: {accepts: [epoch], rate_limit: "", min_score: {}, provenance_required: false}
 
 contract:
   requires:
@@ -81,15 +109,33 @@ contract:
       class: invariant
       status: hypothesis
       check: {test: "load_all_rejects_corrupt_event_kind_byte_instead_of_panicking (unit-тест)", metric: "", threshold: "Err(LoadError::CorruptEventKind), не panic"}
+    - what: "save_epoch/load_epoch восстанавливают revolution/sequence.ids/last_touched_revolution/source_tags согласованно; max_sequence_len после загрузки всегда None (настройка, не история)"
+      class: invariant
+      status: hypothesis
+      check: {test: "save_epoch_and_load_epoch_round_trip_everything (unit-тест)", metric: "", threshold: "побитовое совпадение полей, max_sequence_len == None"}
+    - what: "save_epoch сверяет уже сохранённый префикс тела (как save/save_all) и возвращает Err при несвязанном короче store, не тихий no-op"
+      class: invariant
+      status: hypothesis
+      check: {test: "save_epoch_rejects_unrelated_shorter_store_like_save_does (unit-тест)", metric: "", threshold: "Err, не Ok(())"}
+    - what: "surprise() (s_static/s_growth) после load_epoch даёт тот же вердикт, что до сохранения — не зависит от count_of"
+      class: invariant
+      status: hypothesis
+      check: {test: "reload_preserves_surprise_verdict_exactly_but_recall_scores_only_approximately (unit-тест)", metric: "", threshold: "побитовое совпадение SurpriseReport"}
+    - what: "recall() после load_epoch находит ТЕ ЖЕ кандидаты (множество токенов), но score/порядок могут отличаться — зависимость recall_from_csr от count_of, который load_epoch не восстанавливает (см. known_losses)"
+      class: target
+      status: hypothesis
+      check: {test: "reload_preserves_surprise_verdict_exactly_but_recall_scores_only_approximately (unit-тест)", metric: "множество token у кандидатов до/после", threshold: "совпадает; score — не гарантируется"}
   bonus: []
   guarantees: []
-  known_losses: ["счётчики (counts) не персистятся — после перезапуска age/surprise, завязанные на счётчик, видят его с нуля, не историю встреч"]
+  known_losses: ["счётчики (counts) не персистятся ни одной из функций этого элемента (save/save_all/save_epoch) — это восстановимый вид, не история. НАЙДЕНО 2026-10-31: это не нейтрально для recall() — его формула score использует count_of(token) как множитель веса, так что ранжирование кандидатов после перезапуска процесса меняется, хотя сам набор найденных кандидатов не меняется. Если точное совпадение score когда-нибудь понадобится, счётчики придётся либо персистить (противоречит заявленному 'это восстановимый вид'), либо recall() придётся считать свой вес иначе — решение не принято здесь."]
 
-cost: {ram: "", time: "O(длины недозаписанного хвоста) на save; O(размера полки) на load — полный replay через intern()"}
+cost: {ram: "LAST_TOUCHED_TABLE/SOURCE_TAGS_TABLE растут как O(число различных тронутых токенов), не O(событий) — перезаписываются целиком на каждый save_epoch, не инкрементально, в отличие от BODY_TABLE/DEATH_LOG_TABLE", time: "O(длины недозаписанного хвоста) на save/save_epoch (тело); O(число тронутых токенов) на save_epoch (last_touched+source_tags, полная перезапись); O(размера полки) на load/load_epoch — полный replay через intern()"}
 droppable: {value: true, why: "без персистентности всё работает в памяти одного процесса — просто не переживает перезапуск; ничего из уже построенного технически не зависит от этого элемента"}
-sources: ["../../drafts/axmv2-core-passport.md"]
+sources: ["../../drafts/axmv2-core-passport.md", "../../drafts/axmv2-truth-vs-derived.md"]
 open_questions:
   - "Таймлайн/версии (TimelineEntry в axmg) не перенесены — только тела и лог фокуса, без отдельной истории метаданных сессий."
   - "Многопроцессный/многопоточный доступ к одному redb-файлу не проверен — bin/persist_demo.rs запускает save и load строго по очереди, не параллельно."
-  - "Счётчики не персистятся (сознательное решение, как в axmg) — но это значит, что после перезапуска S-growth/S-static (elements/surprise) и возраст (elements/time) видят полку как будто она только что всё узнала, без реальной истории частот. Не решено, важно ли это для целей проекта."
+  - "РЕШЕНО 2026-10-31 (уточнено): счётчики не персистятся — но это влияет ТОЛЬКО на recall() (ранжирование, не набор кандидатов), не на age()/source_count() (персистятся через save_epoch теперь) и не на surprise() (не зависит от count_of вовсе). Старое, более widely-worried формулирование этого open_question снято как неточное."
+  - "Raw-поток входных порций (истина по drafts/axmv2-truth-vs-derived.md: revolution+тег+байты, не только их итог) этим шагом НЕ персистится — save_epoch кэширует производное (sequence/last_touched/теги), не саму истину. Полная пересборка с нуля при потере/повреждении этого файла пока не из чего сделать. Остаётся открытым (не входило в скоуп Шага 5, который решал кэш, не поток-истину)."
+  - "save_epoch не персистит DEATH_LOG_TABLE (в отличие от save_all) — вызывающему коду, которому нужны и epoch-состояние, и DeathLog одновременно, придётся вызывать обе функции на один путь (должно работать, т.к. это разные таблицы в одной БД, но совместный вызов не протестирован явно)."
 note: ""

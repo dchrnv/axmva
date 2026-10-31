@@ -81,6 +81,27 @@ impl EpochState {
         }
     }
 
+    /// Восстановить полное состояние из уже имеющихся частей (например,
+    /// после загрузки из elements/persist) — `levels` пересчитывается из
+    /// `ids` через `store`, не хранится отдельно (производное). По
+    /// аналогии с `axmva_death::DeathLog::from_parts`.
+    pub fn from_parts(
+        store: Store,
+        sequence_ids: Vec<TokenId>,
+        revolution: u32,
+        last_touched_revolution: HashMap<TokenId, u32>,
+        source_tags: HashMap<TokenId, HashSet<String>>,
+    ) -> Self {
+        let sequence = Sequence::from_ids(&store, sequence_ids);
+        EpochState { store, sequence, revolution, last_touched_revolution, source_tags, max_sequence_len: None }
+    }
+
+    /// Все теги источника, под которыми токены были реально тронуты —
+    /// нужен elements/persist, чтобы сохранить это поле целиком.
+    pub fn source_tags(&self) -> &HashMap<TokenId, HashSet<String>> {
+        &self.source_tags
+    }
+
     /// Задать верхнюю границу длины рабочей последовательности — явный
     /// выбор вызывающего кода, не умолчание. При превышении самые старые
     /// элементы (с начала) срезаются в конце каждого оборота; `Store` не

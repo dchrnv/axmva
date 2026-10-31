@@ -32,11 +32,30 @@ dependencies = [
  "axmva-core",
  "axmva-death",
  "axmva-epoch",
+ "axmva-recall",
+ "axmva-surprise",
  "redb",
 ]
 
 [[package]]
 name = "axmva-ppmi"
+version = "0.1.0"
+dependencies = [
+ "axmva-core",
+ "axmva-epoch",
+]
+
+[[package]]
+name = "axmva-recall"
+version = "0.1.0"
+dependencies = [
+ "axmva-core",
+ "axmva-epoch",
+ "axmva-ppmi",
+]
+
+[[package]]
+name = "axmva-surprise"
 version = "0.1.0"
 dependencies = [
  "axmva-core",
