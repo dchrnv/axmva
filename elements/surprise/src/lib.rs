@@ -159,4 +159,35 @@ mod tests {
         let g = s_growth(&epoch.store, b"q", 2);
         assert_eq!(g, 0.0);
     }
+
+    #[test]
+    fn s_static_on_structured_text_beats_a_byte_shuffle_of_the_same_text() {
+        // Быстрая версия количественного контроля из
+        // bin/shuffle_control.rs (там — на реальных файлах, здесь —
+        // синтетический повторяющийся паттерн, без файлового I/O).
+        let mut epoch = EpochState::new();
+        let pattern = b"the quick brown fox jumps over the lazy dog. ".repeat(50);
+        epoch.turn(&pattern, 2);
+
+        let holdout = b"the quick brown fox jumps over the lazy dog. ".repeat(10);
+        let real = s_static(&epoch.store, &holdout);
+
+        // Перестановка байт внутри holdout разрушает структуру, оставляя
+        // частоты байт теми же — детерминированная, не криптографическая.
+        let mut shuffled = holdout.clone();
+        let mut seed: u64 = 7;
+        for i in (1..shuffled.len()).rev() {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            let j = (seed as usize) % (i + 1);
+            shuffled.swap(i, j);
+        }
+        let shuffled_score = s_static(&epoch.store, &shuffled);
+
+        assert!(
+            real > shuffled_score,
+            "структурированный текст обязан сжиматься лучше своей перетасованной версии: real={real} shuffled={shuffled_score}"
+        );
+    }
 }

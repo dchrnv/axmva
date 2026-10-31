@@ -3,10 +3,21 @@
 # Протестировано (5/5) и прогнано на реальном файле (bin/surprise_demo.rs):
 # знакомый фрагмент -> Familiar, выдуманная тарабарщина с повторами -> NovelGrowth.
 # Это элемент "Отшельник" из drafts/axmv2-deck-map.md.
+#
+# ИЗМЕРЕНО 2026-10-31 (Фаза 3 ROADMAP, Шаг 2 — сверка с чертежом axmg,
+# приёмка раздел 8: "реальный текст на невиданном материале получает
+# S-static выше перетасованного контроля"). bin/shuffle_control.rs: train
+# на первых 1М байт файла, S-static на следующих 100К (невиданный holdout)
+# против честного seeded Fisher-Yates того же holdout (не хеш-перемешивание,
+# как в ppmi_demo.rs). На СВОИХ четырёх корпусах: three_kingdoms_zh +112.6%,
+# wikitext_2_train +60.3%, zaitsev_ocr +188.6%, zaitsev_vol2_ocr +174.4% —
+# разброс шире и не совпадает с цифрой чертежа (axmg 0.1.0: +78..+107%), но
+# направление то же и эффект устойчив на всех четырёх. Плюс быстрый unit-тест
+# (без файлового I/O) на синтетическом повторяющемся паттерне: 5/5 -> 6/6.
 passport_schema: "0.2"
 kind: code
 status: hypothesis
-version: 0.1.0
+version: 0.2.0
 role: "Отшельник: две метрики удивления рядом — S-static (сжатие замороженным словарём, read-only) и S-growth (прирост словаря на холостом прогоне рождения); диагностика, не гейт"
 
 inputs:
@@ -43,6 +54,10 @@ contract:
       class: invariant
       status: hypothesis
       check: {test: "classify_surprise/compute_surprise_score — детерминированные функции, нет мутируемых полей", metric: "", threshold: "структурная гарантия"}
+    - what: "Структурированный (невиданный, но похожий на train) текст даёт S-static выше, чем перетасованная по байтам версия того же текста"
+      class: target
+      status: hypothesis
+      check: {test: "s_static_on_structured_text_beats_a_byte_shuffle_of_the_same_text (unit-тест) + bin/shuffle_control.rs на 4 реальных корпусах", metric: "(real/shuffled - 1) * 100%", threshold: "> 0% на всех проверенных корпусах; диапазон +60.3%..+188.6%, не одно число"}
   bonus: []
   guarantees: []
   known_losses: ["verdict это диагностика, не автоматический классификатор — интерпретация 'шум/рост/знакомо' оставлена читающему отчёт, не встроена как решающее правило конвейера"]
