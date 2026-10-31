@@ -1,0 +1,19 @@
+[package]
+name = "axmva-consolidate"
+version = "0.1.0"
+edition = "2024"
+
+# Реализация elements/consolidate (Умеренность, карта 14 — см. passport.yaml
+# рядом и drafts/axmv2-deck-map.md строки 31/140: код-имя `consolidate` уже
+# записано в словаре деки). Шаг 8 Фазы 3 ROADMAP. Перенос "горячих" счётчиков
+# сессии (Store::count_of, намеренно не персистируемых elements/persist —
+# "восстановимый вид, не история") в "холодный" файл весов по пропорции α,
+# отдельно от топологии — сглаженный, персистентный сигнал, не претендующий
+# быть историей встреч.
+
+[dependencies]
+axmva-core = { path = "../core" }
+redb = "4.1.0"
+# Только для bin/consolidate_demo.rs, не сама библиотека (этому элементу
+# для consolidate() нужен лишь &Store, не EpochState).
+axmva-epoch = { path = "../epoch" }

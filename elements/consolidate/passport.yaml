@@ -1,0 +1,84 @@
+# Черновик (status: hypothesis), предложен агентом по прямой команде пользователя.
+# Шаг 8 Фазы 3 ROADMAP (сверка с чертежом axmg "с нуля", раздел 7, п.6:
+# "Умеренность оставить как есть (фильтр крайностей); перелив горячего в
+# холодное отдельной библиотекой"). Код-имя `consolidate` взято из словаря
+# ../../drafts/axmv2-deck-map.md, строка 140 ("14 Умеренность | consolidate
+# | перенос горячего в холодное") — не придумано, уже записано там же.
+#
+# НЕ faithful-порт — в самом axmg 0.1.0 ЭТОГО НЕТ как кода: чертёж сам
+# помечает строку 14 ("счётчики сессии -> файл весов") как "набросок,
+# принято как черновик", не как готовую реализацию 0.1.0 (в отличие от
+# Port/Moderator, которые реально есть в axmg и помечены [0.1.0]). Это
+# первая реализация по спецификации черновика, не перенос существующего
+# кода.
+#
+# Прямая связь с уже известным фактом: elements/persist сознательно НЕ
+# персистирует Store::count_of ("восстановимый вид, не история" — его
+# passport.yaml). Этот элемент не отменяет то решение — он даёт ДРУГОЙ,
+# более скромный сигнал: сглаженный "холодный" вес (EMA по сессиям),
+# переживающий перезапуски, явно не претендующий быть точной историей
+# встреч.
+#
+# Протестировано (7/7) и прогнано на реальном файле ДВУМЯ ОТДЕЛЬНЫМИ
+# ПРОЦЕССАМИ (bin/consolidate_demo.rs session|check) — холодный вес токена
+# накопился между двумя "сессиями" (0.300 -> 0.510 после второго переноса
+# с тем же hot=1) и пережил перезапуск процесса.
+passport_schema: "0.2"
+kind: code
+status: hypothesis
+version: 0.1.0
+role: "Умеренность: перенос 'горячих' счётчиков сессии (Store::count_of) в 'холодный' файл весов по пропорции α (cold = (1-α)·cold + α·hot), отдельно от топологии — персистентный, но сглаженный сигнал, не история"
+
+inputs:
+  - {name: store, type: "&Store", meaning: "полка (источник: elements/core) — читается только count_of(), тело не трогается"}
+  - {name: alpha, type: f64, meaning: "пропорция переноса; должна быть в (0.0, 1.0] — вне диапазона возвращает ConsolidateError::InvalidAlpha, не паникует"}
+
+outputs:
+  - {name: cold_weights, type: ColdWeights, meaning: "token -> сглаженный вес; 0.0 для токена, который никогда не consolidated"}
+  - {name: saved_file, type: "redb database", meaning: "ОТДЕЛЬНЫЙ файл, не та же база, что топология/epoch-кэш elements/persist — по прямому требованию черновика ('отдельный файл вне ядра')"}
+
+depends_on: [{id: core, version_range: ">=0.1.0"}]
+must_not_touch: [смысл]
+
+links_in:
+  - from: core
+    channel: direct
+    format: "Store (count_of, len)"
+    mode: read
+    gate: {accepts: [core], rate_limit: "", min_score: {}, provenance_required: false}
+
+contract:
+  requires:
+    - what: "α вне (0.0, 1.0] даёт Err(InvalidAlpha), не панику и не тихое некорректное поведение"
+      class: invariant
+      status: hypothesis
+      check: {test: "consolidate_rejects_alpha_out_of_range (unit-тест)", metric: "", threshold: ""}
+    - what: "Первый перенос для токена: cold = α·hot (предыдущий cold=0 по определению нетронутого токена)"
+      class: invariant
+      status: hypothesis
+      check: {test: "first_consolidate_moves_cold_toward_hot_by_exactly_alpha (unit-тест)", metric: "", threshold: ""}
+    - what: "Повторные переносы с постоянным hot сходятся к hot (геометрический остаток (1-α)^n -> 0)"
+      class: invariant
+      status: hypothesis
+      check: {test: "repeated_consolidate_with_constant_hot_converges_toward_hot (unit-тест)", metric: "|cold - hot| после 50 переносов с α=0.3", threshold: "< 1e-4"}
+    - what: "α=1.0 — cold полностью теряет память, становится равен текущему hot на каждом переносе"
+      class: invariant
+      status: hypothesis
+      check: {test: "alpha_one_makes_cold_track_hot_exactly_every_time_no_memory (unit-тест)", metric: "", threshold: ""}
+    - what: "save/load — честный snapshot round-trip (не append-only лог, у сглаженного сигнала нет префикса для верификации)"
+      class: invariant
+      status: hypothesis
+      check: {test: "save_and_load_round_trip + save_is_a_full_snapshot_not_an_incremental_log (unit-тесты)", metric: "", threshold: "побитовое совпадение ColdWeights"}
+  bonus: []
+  guarantees: []
+  known_losses: ["Не инкрементально: consolidate() проходит ВСЮ полку (0..store.len()) на каждый вызов, даже если изменились счётчики только нескольких токенов — O(vocab_size) на вызов, не O(число реально тронутых). На большом словаре при частых вызовах это может быть дорого; не измерено на масштабе."]
+
+cost: {ram: "O(число токенов с непустым весом) — HashMap<TokenId, f64>, растёт как полка, не ограничен отдельно", time: "O(store.len()) на каждый consolidate() — полный проход, не инкрементальный (см. known_losses); не измерено на больших полках"}
+droppable: {value: true, why: "ничего из уже построенного не зависит от этого элемента технически — это дополнительный, персистентный сигнал сверх того, что уже даёт recall()/surprise() через сырые (непостоянные) счётчики"}
+sources: ["../../drafts/axmv2-deck-map.md", "/home/assis/axmg/shelf/src/port.rs (п.7.6 чертежа: разделить фильтр крайностей и перелив горячего в холодное на две библиотеки — фильтр уже в elements/port::CandidateFilter, этот элемент — вторая половина)"]
+open_questions:
+  - "Величина α не выбрана для реального домена — тесты используют 0.3/0.5/1.0 как иллюстрацию механики, не как рекомендацию. Нужен тот же подход, что у epoch::max_sequence_len: вывести из данных/бюджета, не скопировать число."
+  - "Не инкрементально (см. known_losses) — если понадобится частый consolidate() на большом словаре, нужен способ отслеживать только реально изменившиеся счётчики (например, множество 'грязных' token_id с последнего вызова), не весь store.len() каждый раз."
+  - "Отдельный файл по требованию черновика — не объединён с elements/persist в одну транзакцию. Если когда-нибудь понадобится атомарность между топологией и холодными весами (например, откат одного без другого недопустим), это станет открытым вопросом заново."
+  - "inner[] (накопленный рост axtime, упомянутый в той же строке деки рядом со 'счётчики') не перенесён — только Store::count_of. axtime/clock-состояние уже отдельно отмечено (elements/port/passport.yaml) как не умещающееся в простую 'производное, пересчитывается на лету' модель; если понадобится холодный перенос и для него, это отдельная развилка, не решённая здесь."
+note: ""
