@@ -1,0 +1,16 @@
+[package]
+name = "ppmi-growth-bench"
+version = "0.1.0"
+edition = "2024"
+
+# Инструмент диагностики, не формальный элемент. Фаза 3 ROADMAP, Шаг 7:
+# проверяет перед тем, как строить top-k/затухание/бюджет рёбер, растут
+# ли PPMI-связи действительно без границ в нашей архитектуре, или это
+# уже ограничено через epoch::max_sequence_len — CooAccumulator у нас
+# (как и в самом axmg) всегда строится заново из sequence на каждый
+# запрос, не хранится как растущая структура между запросами.
+
+[dependencies]
+axmva-core = { path = "../../elements/core" }
+axmva-epoch = { path = "../../elements/epoch" }
+axmva-ppmi = { path = "../../elements/ppmi" }
