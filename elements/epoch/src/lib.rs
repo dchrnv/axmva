@@ -19,7 +19,7 @@
 //! этого элемента.
 
 use axmva_core::{merge, Sequence, Store, TokenId};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Отчёт об обороте: что произошло с этой порцией, без оценки surprise —
 /// это дело отдельного элемента, читающего выходы Колеса.
@@ -46,6 +46,12 @@ pub struct EpochState {
     /// реального касания (рост счётчика) в этом обороте — иначе окно
     /// "возраста" никогда никого не состарит.
     pub last_touched_revolution: HashMap<TokenId, u32>,
+    /// token -> множество различных тегов источника, под которыми токен
+    /// реально был тронут (то же условие, что у `last_touched_revolution`
+    /// — не простое присутствие в последовательности). Заполняется только
+    /// через `turn_tagged`/`run_corpus_tagged`; обычный `turn` его не
+    /// трогает, остаётся пустым для токенов, тронутых только без тега.
+    source_tags: HashMap<TokenId, HashSet<String>>,
     /// Верхняя граница длины рабочей последовательности (`sequence`), не
     /// полки (`store` — тела токенов никогда не удаляются). `None` —
     /// без ограничения (поведение по умолчанию, как раньше): измерено
@@ -70,6 +76,7 @@ impl EpochState {
             sequence: Sequence { ids: Vec::new(), levels: Vec::new() },
             revolution: 0,
             last_touched_revolution: HashMap::new(),
+            source_tags: HashMap::new(),
             max_sequence_len: None,
         }
     }
@@ -94,6 +101,20 @@ impl EpochState {
     /// промежуточного состояния, пока волна слияний для этой порции не
     /// сойдётся.
     pub fn turn(&mut self, chunk: &[u8], threshold: u64) -> TurnReport {
+        self.turn_impl(chunk, threshold, None)
+    }
+
+    /// Как `turn`, но помечает каждый реально тронутый в этом обороте
+    /// токен тегом источника (кто подал порцию — корпус, диалог, сенсор;
+    /// назначается транспортом, не содержимым). `source_count` потом
+    /// читает число РАЗНЫХ тегов на токен. См.
+    /// drafts/axmv2-truth-vs-derived.md — тег это часть новой истины
+    /// (поток порций), не отдельная колонка сама по себе.
+    pub fn turn_tagged(&mut self, chunk: &[u8], threshold: u64, tag: &str) -> TurnReport {
+        self.turn_impl(chunk, threshold, Some(tag))
+    }
+
+    fn turn_impl(&mut self, chunk: &[u8], threshold: u64, tag: Option<&str>) -> TurnReport {
         let vocab_before = self.store.len();
 
         let mut before_counts: HashMap<TokenId, u64> = HashMap::new();
@@ -120,6 +141,9 @@ impl EpochState {
             };
             if touched_this_turn {
                 self.last_touched_revolution.insert(id, self.revolution);
+                if let Some(t) = tag {
+                    self.source_tags.entry(id).or_default().insert(t.to_string());
+                }
             }
         }
 
@@ -154,6 +178,22 @@ impl EpochState {
             .chunks(axmva_core::REVOLUTION_CHUNK_BYTES)
             .map(|chunk| self.turn(chunk, threshold))
             .collect()
+    }
+
+    /// Как `run_corpus`, но каждый оборот помечен тем же тегом источника
+    /// (весь вход пришёл из одного транспорта за один вызов).
+    pub fn run_corpus_tagged(&mut self, bytes: &[u8], threshold: u64, tag: &str) -> Vec<TurnReport> {
+        bytes
+            .chunks(axmva_core::REVOLUTION_CHUNK_BYTES)
+            .map(|chunk| self.turn_tagged(chunk, threshold, tag))
+            .collect()
+    }
+
+    /// Число РАЗНЫХ тегов источника, под которыми токен был реально
+    /// тронут (не просто присутствовал в последовательности) — 0, если
+    /// токен никогда не касался через `turn_tagged`/`run_corpus_tagged`.
+    pub fn source_count(&self, token: TokenId) -> usize {
+        self.source_tags.get(&token).map(|tags| tags.len()).unwrap_or(0)
     }
 
     /// Возраст токена в оборотах: сколько оборотов прошло с последнего
@@ -278,6 +318,59 @@ mod tests {
         for _ in 0..5 {
             epoch.turn(b"xyzxyzxyzxyzxyzxyzxyzxyzxyzxyz", 2);
             assert!(epoch.sequence.ids.len() <= 10, "лимит обязан держаться на каждом обороте, не только на первом");
+        }
+    }
+
+    #[test]
+    fn plain_turn_never_populates_source_count() {
+        let mut epoch = EpochState::new();
+        epoch.turn(b"ab ab ab", 2);
+        for &id in &epoch.sequence.ids {
+            assert_eq!(epoch.source_count(id), 0, "обычный turn() не должен трогать тег источника вообще");
+        }
+    }
+
+    #[test]
+    fn turn_tagged_records_the_tag_only_for_tokens_really_touched_this_turn() {
+        let mut epoch = EpochState::new();
+        epoch.turn_tagged(b"ab ab", 2, "corpus:a");
+        let ab = epoch.sequence.ids[0];
+        assert_eq!(epoch.source_count(ab), 1);
+
+        // Тот же тег повторно -> множество не растёт (это РАЗНЫЕ теги,
+        // не счётчик касаний).
+        epoch.turn_tagged(b"ab ab", 2, "corpus:a");
+        assert_eq!(epoch.source_count(ab), 1, "повторный тот же тег не увеличивает число РАЗНЫХ источников");
+
+        epoch.turn_tagged(b"ab ab", 2, "corpus:b");
+        assert_eq!(epoch.source_count(ab), 2, "второй, другой тег обязан увеличить счёт");
+    }
+
+    #[test]
+    fn stale_token_sitting_unchanged_does_not_gain_a_new_source_tag() {
+        // Тот же критерий, что у last_touched_revolution: присутствие в
+        // sequence без реального роста счётчика не считается касанием.
+        let mut epoch = EpochState::new();
+        epoch.turn_tagged(b"ab", 2, "corpus:a");
+        let ab = epoch.sequence.ids[0];
+        assert_eq!(epoch.source_count(ab), 1);
+
+        // Следующий оборот не содержит 'ab' вовсе — токен просто лежит
+        // нетронутым (если бы лежал) под другим тегом; здесь проверяем,
+        // что чужой оборот без касания этого токена не меняет его счёт.
+        epoch.turn_tagged(b"zz zz zz", 2, "corpus:b");
+        assert_eq!(epoch.source_count(ab), 1, "токен не тронутый в этом обороте не получает новый тег");
+    }
+
+    #[test]
+    fn run_corpus_tagged_tags_every_turn_with_the_same_source() {
+        let mut epoch = EpochState::new();
+        let bytes = vec![b'x'; axmva_core::REVOLUTION_CHUNK_BYTES + 10];
+        epoch.run_corpus_tagged(&bytes, 2, "corpus:big");
+        let touched: Vec<TokenId> = epoch.sequence.ids.clone();
+        assert!(!touched.is_empty());
+        for id in touched {
+            assert!(epoch.source_count(id) >= 1, "каждый реально тронутый токен обязан получить тег");
         }
     }
 }
